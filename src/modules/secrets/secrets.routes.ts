@@ -26,7 +26,7 @@ export function createSecretsRouter(options: SecretsRouterOptions): Router {
   router.post(
     '/',
     options.rateLimiters.create,
-    validateRequest({ body: createSecretBodySchema }),
+    validateRequest({ body: createSecretBodySchema, query: statusQuerySchema }),
     controller.createSecret
   );
 
@@ -42,7 +42,11 @@ export function createSecretsRouter(options: SecretsRouterOptions): Router {
   router.post(
     '/:token/consume',
     options.rateLimiters.consume,
-    validateRequest({ params: tokenParamSchema, body: consumeBodySchema }),
+    validateRequest({
+      params: tokenParamSchema,
+      body: consumeBodySchema,
+      query: statusQuerySchema,
+    }),
     controller.consumeSecret
   );
 
