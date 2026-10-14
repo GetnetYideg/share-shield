@@ -2,11 +2,12 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '../../db/schema.js';
 import { SecretsRepository } from './secrets.repository.js';
 import type { CreateSecretInput } from './secrets.schemas.js';
+import { hashTokenFromBase64Url, decodeBase64Url, constantTimeEqual } from '../../lib/crypto.js';
 import {
-  hashTokenFromBase64Url,
-  decodeBase64Url,
-} from '../../lib/crypto.js';
-import { SecretUnavailableError, ValidationError } from '../../lib/errors.js';
+  SecretUnavailableError,
+  ValidationError,
+  RevokeNotAuthorizedError,
+} from '../../lib/errors.js';
 
 export interface SecretCreatedResult {
   created: boolean;
@@ -16,6 +17,12 @@ export interface SecretCreatedResult {
 export interface SecretStatusResult {
   available: boolean;
   expiresAt: Date;
+}
+
+export interface SecretConsumedResult {
+  ciphertext: string;
+  iv: string;
+  payloadVersion: number;
 }
 
 export class SecretsService {
@@ -90,5 +97,75 @@ export class SecretsService {
       available: true,
       expiresAt: record.expiresAt,
     };
+  }
+
+  /**
+   * Atomically claims and consumes a secret in PostgreSQL (FR-06, Invariant 3, Phase 1 decision 3g).
+   * Returns ciphertext and IV exactly once, zeroizing them in the database.
+   * Returns generic 404 SECRET_UNAVAILABLE if missing, expired, already consumed, or revoked.
+   */
+  async consumeSecret(
+    db: NodePgDatabase<typeof schema>,
+    token: string
+  ): Promise<SecretConsumedResult> {
+    const tokenHash = hashTokenFromBase64Url(token, 'token');
+    const result = await this.repository.consume(db, tokenHash);
+
+    if (!result) {
+      throw new SecretUnavailableError();
+    }
+
+    return {
+      ciphertext: result.ciphertext.toString('base64url'),
+      iv: result.iv.toString('base64url'),
+      payloadVersion: result.payloadVersion,
+    };
+  }
+
+  /**
+   * Revokes an active secret using the creator's revoke capability (FR-09, Phase 1 decision 3a & 3b).
+   * Compares hashes using constant-time comparison (crypto.timingSafeEqual).
+   * Follows non-oracle rules: returns 404 if secret is already unavailable (expired/consumed/revoked/unknown).
+   * Returns 403 if secret is available but revoke token is invalid.
+   */
+  async revokeSecret(
+    db: NodePgDatabase<typeof schema>,
+    token: string,
+    rawRevokeToken: string
+  ): Promise<void> {
+    const tokenHash = hashTokenFromBase64Url(token, 'token');
+    const expectedRevokeHash = hashTokenFromBase64Url(rawRevokeToken, 'revokeToken');
+
+    const record = await this.repository.findForRevoke(db, tokenHash);
+
+    // Phase 1 non-oracle rule: if secret is unavailable, return 404 regardless of revoke token
+    if (!record || record.consumedAt !== null || record.revokedAt !== null) {
+      throw new SecretUnavailableError();
+    }
+
+    if (record.expiresAt.getTime() <= Date.now()) {
+      throw new SecretUnavailableError();
+    }
+
+    // Constant-time hash verification against timing attacks (TH-09)
+    if (!constantTimeEqual(record.revokeTokenHash, expectedRevokeHash)) {
+      throw new RevokeNotAuthorizedError();
+    }
+
+    const revoked = await this.repository.revoke(db, record.id);
+    if (!revoked) {
+      throw new SecretUnavailableError();
+    }
+  }
+
+  /**
+   * Cleans up expired, consumed, and revoked records exceeding the retention period.
+   */
+  async cleanupExpired(
+    db: NodePgDatabase<typeof schema>,
+    retentionHours: number,
+    batchSize = 1000
+  ): Promise<number> {
+    return this.repository.cleanupExpiredAndConsumed(db, retentionHours, batchSize);
   }
 }

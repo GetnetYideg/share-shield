@@ -76,7 +76,8 @@ const parseCorsOrigins = (val: string, ctx: z.RefinementCtx): string[] => {
       ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'Each CORS origin must be an exact origin (scheme://host[:port]) without trailing slash or path.',
+          message:
+            'Each CORS origin must be an exact origin (scheme://host[:port]) without trailing slash or path.',
         });
         return z.NEVER;
       }
@@ -145,9 +146,7 @@ const rawEnvSchema = z.object({
   RATE_LIMIT_CONSUME_MAX: z.coerce.number().int().positive().default(15),
   RATE_LIMIT_REVOKE_MAX: z.coerce.number().int().positive().default(15),
   RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(10),
-  LOG_LEVEL: z
-    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
-    .default('info'),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   MAX_BODY_SIZE: z
     .string()
     .regex(/^\d+(b|kb|mb)$/i, 'MAX_BODY_SIZE must be a valid size (e.g. 16kb)')

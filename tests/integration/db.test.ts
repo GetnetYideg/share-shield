@@ -38,9 +38,9 @@ describe('Database Layer & Schema Constraints Integration Tests', () => {
     });
 
     it('refuses to run against non-test database names', () => {
-      expect(() =>
-        assertTestDatabase('postgresql://localhost:5432/onevault_prod', 'test')
-      ).toThrow(/Safety guard violation: Refusing to run tests against non-test database/);
+      expect(() => assertTestDatabase('postgresql://localhost:5432/onevault_prod', 'test')).toThrow(
+        /Safety guard violation: Refusing to run tests against non-test database/
+      );
     });
   });
 

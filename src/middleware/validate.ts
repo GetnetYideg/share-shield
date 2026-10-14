@@ -1,8 +1,8 @@
-import { z, type AnyZodObject, type ZodEffects } from 'zod';
+import { z } from 'zod';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { ValidationError } from '../lib/errors.js';
 
-export type StrictValidationTarget = AnyZodObject | ZodEffects<AnyZodObject>;
+export type StrictValidationTarget = z.ZodTypeAny;
 
 export interface ValidationSchemas {
   body?: StrictValidationTarget;

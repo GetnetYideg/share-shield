@@ -10,11 +10,7 @@ export function createHealthRouter(pool?: pg.Pool): Router {
   const router = Router();
   const healthHandler = createHealthController(pool);
 
-  router.get(
-    '/',
-    validateRequest({ query: emptyQuerySchema }),
-    healthHandler
-  );
+  router.get('/', validateRequest({ query: emptyQuerySchema }), healthHandler);
 
   return router;
 }

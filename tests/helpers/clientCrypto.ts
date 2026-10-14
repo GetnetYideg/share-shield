@@ -26,13 +26,10 @@ export async function createClientSecret(
 ): Promise<ClientEncryptedPayload> {
   // 1. Generate 32-byte AES key
   const rawKey = crypto.randomBytes(32);
-  const cryptoKey = await subtle.importKey(
-    'raw',
-    rawKey,
-    { name: 'AES-GCM' },
-    true,
-    ['encrypt', 'decrypt']
-  );
+  const cryptoKey = await subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, true, [
+    'encrypt',
+    'decrypt',
+  ]);
 
   // 2. Generate unique 12-byte IV
   const rawIv = crypto.randomBytes(12);
@@ -81,13 +78,7 @@ export async function decryptClientSecret(
   const rawIv = Buffer.from(ivBase64Url, 'base64url');
   const rawCiphertext = Buffer.from(ciphertextBase64Url, 'base64url');
 
-  const cryptoKey = await subtle.importKey(
-    'raw',
-    rawKey,
-    { name: 'AES-GCM' },
-    false,
-    ['decrypt']
-  );
+  const cryptoKey = await subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['decrypt']);
 
   const decryptedBuffer = await subtle.decrypt(
     { name: 'AES-GCM', iv: rawIv },

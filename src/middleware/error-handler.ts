@@ -24,12 +24,7 @@ export function notFoundHandler(_req: Request, _res: Response, next: NextFunctio
  * Maps operational, validation, and body-parser errors to Api_Reference.md section 2.2 format.
  * Never exposes stack traces, internal details, or request bodies (Invariant 1, TH-13).
  */
-export function errorHandler(
-  err: unknown,
-  req: Request,
-  res: Response,
-  _next: NextFunction
-): void {
+export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
   let statusCode = 500;
   let code: ErrorCode = 'INTERNAL_ERROR';
   let message = 'An unexpected server error occurred.';

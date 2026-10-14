@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isCanonicalBase64Url } from '../../lib/crypto.js';
+import { UnauthenticatedError, ValidationError } from '../../lib/errors.js';
 
 // Base64url regex matching exact 43 chars for 32-byte tokens
 const TOKEN_REGEX = /^[A-Za-z0-9_-]{43}$/;
@@ -56,12 +57,7 @@ export const createSecretBodySchema = z
         message: 'iv must decode to exactly 12 bytes with canonical base64url encoding',
       }),
     expiresInSeconds: z
-      .union([
-        z.literal(600),
-        z.literal(3600),
-        z.literal(86400),
-        z.literal(604800),
-      ])
+      .union([z.literal(600), z.literal(3600), z.literal(86400), z.literal(604800)])
       .default(3600),
     payloadVersion: z.literal(1).default(1),
   })
@@ -73,3 +69,33 @@ export type CreateSecretInput = z.infer<typeof createSecretBodySchema>;
  * Validates query parameters on GET /api/v1/secrets/:token/status.
  */
 export const statusQuerySchema = z.object({}).strict();
+
+/**
+ * Validates body on POST /api/v1/secrets/:token/consume (empty-strict).
+ */
+export const consumeBodySchema = z.object({}).strict();
+
+/**
+ * Parses and validates the creator revoke token from the Authorization header (Phase 1 decision 3a & 3b).
+ * Throws UnauthenticatedError (401) if missing.
+ * Throws ValidationError (400) if malformed.
+ */
+export function parseRevokeTokenFromHeader(header: string | undefined): string {
+  if (!header || header.trim() === '') {
+    throw new UnauthenticatedError('Authorization header is required.');
+  }
+
+  const match = header.match(/^Bearer\s+([A-Za-z0-9_-]+)$/i);
+  if (!match || !match[1]) {
+    throw new ValidationError('Authorization header must be in format Bearer <revokeToken>.');
+  }
+
+  const token = match[1];
+  if (!isCanonicalBase64Url(token, 32)) {
+    throw new ValidationError(
+      'Revoke token must decode to exactly 32 bytes with canonical base64url encoding.'
+    );
+  }
+
+  return token;
+}

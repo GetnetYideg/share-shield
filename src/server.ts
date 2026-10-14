@@ -2,6 +2,8 @@ import { createClient } from 'redis';
 import { parseEnv, ConfigValidationError } from './config/env.js';
 import { createLogger } from './lib/logger.js';
 import { createApp } from './app.js';
+import { getDb, closePool } from './db/client.js';
+import { startCleanupScheduler } from './jobs/cleanup.js';
 import type { SendCommandFn } from 'rate-limit-redis';
 
 async function bootstrap(): Promise<void> {
@@ -19,6 +21,7 @@ async function bootstrap(): Promise<void> {
   }
 
   const logger = createLogger({ level: config.LOG_LEVEL });
+  const db = getDb(config);
 
   let redisSendCommand: SendCommandFn | undefined;
   let redisClient: ReturnType<typeof createClient> | undefined;
@@ -33,25 +36,29 @@ async function bootstrap(): Promise<void> {
     logger.info('Connected to Redis for distributed rate limiting.');
   }
 
+  const cleanupTimer = startCleanupScheduler(db, config, logger);
+
   const app = createApp({
     config,
     logger,
+    db,
     redisSendCommand,
   });
 
   const server = app.listen(config.PORT, () => {
-    logger.info(
-      { port: config.PORT, env: config.NODE_ENV },
-      'OneVault API server started'
-    );
+    logger.info({ port: config.PORT, env: config.NODE_ENV }, 'OneVault API server started');
   });
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'Received shutdown signal, closing server gracefully...');
+    if (cleanupTimer) {
+      clearInterval(cleanupTimer);
+    }
     server.close(async () => {
       if (redisClient?.isOpen) {
         await redisClient.quit();
       }
+      await closePool();
       logger.info('Graceful shutdown complete.');
       process.exit(0);
     });

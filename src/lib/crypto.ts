@@ -46,8 +46,7 @@ export function decodeBase64Url(
   fieldName = 'input'
 ): Buffer {
   if (!isCanonicalBase64Url(str, expectedByteLength)) {
-    const expectedDesc =
-      expectedByteLength !== undefined ? ` (${expectedByteLength} bytes)` : '';
+    const expectedDesc = expectedByteLength !== undefined ? ` (${expectedByteLength} bytes)` : '';
     throw new ValidationError(
       `Invalid ${fieldName}: must be canonical unpadded base64url${expectedDesc}.`
     );
@@ -70,10 +69,7 @@ export function hashToken(rawTokenBytes: Buffer): Buffer {
 /**
  * Decodes a 32-byte canonical base64url token and returns its 32-byte SHA-256 digest.
  */
-export function hashTokenFromBase64Url(
-  tokenBase64Url: string,
-  fieldName = 'token'
-): Buffer {
+export function hashTokenFromBase64Url(tokenBase64Url: string, fieldName = 'token'): Buffer {
   const rawBytes = decodeBase64Url(tokenBase64Url, 32, fieldName);
   return hashToken(rawBytes);
 }

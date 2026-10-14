@@ -70,16 +70,13 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
       const app = createApp({ config, db });
       const secretPayload = await createClientSecret('super confidential secret');
 
-      await request(app)
-        .post('/api/v1/secrets')
-        .set('Content-Type', 'application/json')
-        .send({
-          token: secretPayload.token,
-          revokeToken: secretPayload.revokeToken,
-          ciphertext: secretPayload.ciphertext,
-          iv: secretPayload.iv,
-          expiresInSeconds: 3600,
-        });
+      await request(app).post('/api/v1/secrets').set('Content-Type', 'application/json').send({
+        token: secretPayload.token,
+        revokeToken: secretPayload.revokeToken,
+        ciphertext: secretPayload.ciphertext,
+        iv: secretPayload.iv,
+        expiresInSeconds: 3600,
+      });
 
       // Query raw database rows
       const pool = getPool(config);
@@ -101,15 +98,24 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
       for (const [column, value] of Object.entries(row)) {
         let stringValue = '';
         if (Buffer.isBuffer(value)) {
-          stringValue = value.toString('utf8') + ' ' + value.toString('hex') + ' ' + value.toString('base64url');
+          stringValue =
+            value.toString('utf8') +
+            ' ' +
+            value.toString('hex') +
+            ' ' +
+            value.toString('base64url');
         } else if (value !== null && value !== undefined) {
           stringValue = String(value);
         }
 
         expect(stringValue, `Column ${column} leaked raw token`).not.toContain(secretPayload.token);
-        expect(stringValue, `Column ${column} leaked raw revokeToken`).not.toContain(secretPayload.revokeToken);
+        expect(stringValue, `Column ${column} leaked raw revokeToken`).not.toContain(
+          secretPayload.revokeToken
+        );
         expect(stringValue, `Column ${column} leaked key`).not.toContain(secretPayload.key);
-        expect(stringValue, `Column ${column} leaked plaintext`).not.toContain(secretPayload.plaintext);
+        expect(stringValue, `Column ${column} leaked plaintext`).not.toContain(
+          secretPayload.plaintext
+        );
       }
     });
 
@@ -149,35 +155,29 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
         const secretPayload = await createClientSecret('text');
 
         // Missing token
-        const res1 = await request(app)
-          .post('/api/v1/secrets')
-          .send({
-            revokeToken: secretPayload.revokeToken,
-            ciphertext: secretPayload.ciphertext,
-            iv: secretPayload.iv,
-          });
+        const res1 = await request(app).post('/api/v1/secrets').send({
+          revokeToken: secretPayload.revokeToken,
+          ciphertext: secretPayload.ciphertext,
+          iv: secretPayload.iv,
+        });
         expect(res1.status).toBe(400);
         expect(res1.body.error.code).toBe('VALIDATION_ERROR');
 
         // Missing ciphertext
-        const res2 = await request(app)
-          .post('/api/v1/secrets')
-          .send({
-            token: secretPayload.token,
-            revokeToken: secretPayload.revokeToken,
-            iv: secretPayload.iv,
-          });
+        const res2 = await request(app).post('/api/v1/secrets').send({
+          token: secretPayload.token,
+          revokeToken: secretPayload.revokeToken,
+          iv: secretPayload.iv,
+        });
         expect(res2.status).toBe(400);
         expect(res2.body.error.code).toBe('VALIDATION_ERROR');
 
         // Missing iv
-        const res3 = await request(app)
-          .post('/api/v1/secrets')
-          .send({
-            token: secretPayload.token,
-            revokeToken: secretPayload.revokeToken,
-            ciphertext: secretPayload.ciphertext,
-          });
+        const res3 = await request(app).post('/api/v1/secrets').send({
+          token: secretPayload.token,
+          revokeToken: secretPayload.revokeToken,
+          ciphertext: secretPayload.ciphertext,
+        });
         expect(res3.status).toBe(400);
         expect(res3.body.error.code).toBe('VALIDATION_ERROR');
       });
@@ -186,15 +186,13 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
         const app = createApp({ config, db });
         const secretPayload = await createClientSecret('text');
 
-        const res = await request(app)
-          .post('/api/v1/secrets')
-          .send({
-            token: secretPayload.token,
-            revokeToken: secretPayload.revokeToken,
-            ciphertext: secretPayload.ciphertext,
-            iv: secretPayload.iv,
-            key: secretPayload.key,
-          });
+        const res = await request(app).post('/api/v1/secrets').send({
+          token: secretPayload.token,
+          revokeToken: secretPayload.revokeToken,
+          ciphertext: secretPayload.ciphertext,
+          iv: secretPayload.iv,
+          key: secretPayload.key,
+        });
 
         expect(res.status).toBe(400);
         expect(res.body.error.code).toBe('VALIDATION_ERROR');
@@ -256,14 +254,12 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
         const app = createApp({ config, db });
         const secretPayload = await createClientSecret('text');
 
-        const res = await request(app)
-          .post('/api/v1/secrets')
-          .send({
-            token: secretPayload.token,
-            revokeToken: secretPayload.revokeToken,
-            ciphertext: 'too_short',
-            iv: secretPayload.iv,
-          });
+        const res = await request(app).post('/api/v1/secrets').send({
+          token: secretPayload.token,
+          revokeToken: secretPayload.revokeToken,
+          ciphertext: 'too_short',
+          iv: secretPayload.iv,
+        });
 
         expect(res.status).toBe(400);
         expect(res.body.error.code).toBe('VALIDATION_ERROR');
@@ -273,15 +269,13 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
         const app = createApp({ config, db });
         const secretPayload = await createClientSecret('text');
 
-        const res = await request(app)
-          .post('/api/v1/secrets')
-          .send({
-            token: secretPayload.token,
-            revokeToken: secretPayload.revokeToken,
-            ciphertext: secretPayload.ciphertext,
-            iv: secretPayload.iv,
-            expiresInSeconds: 9999,
-          });
+        const res = await request(app).post('/api/v1/secrets').send({
+          token: secretPayload.token,
+          revokeToken: secretPayload.revokeToken,
+          ciphertext: secretPayload.ciphertext,
+          iv: secretPayload.iv,
+          expiresInSeconds: 9999,
+        });
 
         expect(res.status).toBe(400);
         expect(res.body.error.code).toBe('VALIDATION_ERROR');

@@ -8,6 +8,7 @@ import {
   createSecretBodySchema,
   tokenParamSchema,
   statusQuerySchema,
+  consumeBodySchema,
 } from './secrets.schemas.js';
 import type { RateLimiterRegistry } from '../../middleware/rate-limiter.js';
 
@@ -35,6 +36,22 @@ export function createSecretsRouter(options: SecretsRouterOptions): Router {
     options.rateLimiters.status,
     validateRequest({ params: tokenParamSchema, query: statusQuerySchema }),
     controller.getSecretStatus
+  );
+
+  // POST /api/v1/secrets/:token/consume: Atomic claim and retrieval of ciphertext
+  router.post(
+    '/:token/consume',
+    options.rateLimiters.consume,
+    validateRequest({ params: tokenParamSchema, body: consumeBodySchema }),
+    controller.consumeSecret
+  );
+
+  // DELETE /api/v1/secrets/:token: Creator revocation using revoke capability
+  router.delete(
+    '/:token',
+    options.rateLimiters.revoke,
+    validateRequest({ params: tokenParamSchema, query: statusQuerySchema }),
+    controller.revokeSecret
   );
 
   return router;

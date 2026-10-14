@@ -108,9 +108,7 @@ describe('Phase 2: Foundation & Security Baseline Integration Tests', () => {
       expect(insecureRes.body.error.code).toBe('HTTPS_REQUIRED');
 
       // HTTPS via trusted proxy succeeds and includes Strict-Transport-Security
-      const secureRes = await request(app)
-        .get('/api/v1/health')
-        .set('X-Forwarded-Proto', 'https');
+      const secureRes = await request(app).get('/api/v1/health').set('X-Forwarded-Proto', 'https');
       expect(secureRes.status).toBe(200);
       assertSecurityAndCacheHeaders(secureRes);
       expect(secureRes.headers['strict-transport-security']).toContain('max-age=63072000');
@@ -125,9 +123,7 @@ describe('Phase 2: Foundation & Security Baseline Integration Tests', () => {
       });
       const app = createApp({ config });
 
-      const res = await request(app)
-        .get('/api/v1/health')
-        .set('Origin', 'http://localhost:5173');
+      const res = await request(app).get('/api/v1/health').set('Origin', 'http://localhost:5173');
 
       expect(res.status).toBe(200);
       expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5173');
@@ -169,13 +165,9 @@ describe('Phase 2: Foundation & Security Baseline Integration Tests', () => {
       return createApp({
         config,
         registerAdditionalRoutes: (app) => {
-          app.post(
-            '/api/v1/secrets',
-            validateRequest({ body: bodySchema }),
-            (req, res) => {
-              res.status(201).json({ data: { created: true }, requestId: req.requestId });
-            }
-          );
+          app.post('/api/v1/secrets', validateRequest({ body: bodySchema }), (req, res) => {
+            res.status(201).json({ data: { created: true }, requestId: req.requestId });
+          });
         },
       });
     }
@@ -325,7 +317,7 @@ describe('Phase 2: Foundation & Security Baseline Integration Tests', () => {
         config,
         logger,
         registerAdditionalRoutes: (expressApp) => {
-          expressApp.post('/api/v1/secrets/:token/consume', (req, res) => {
+          expressApp.post('/api/v1/test-logger/:token/consume', (req, res) => {
             res.status(200).json({ data: { ok: true }, requestId: req.requestId });
           });
         },
@@ -340,7 +332,7 @@ describe('Phase 2: Foundation & Security Baseline Integration Tests', () => {
 
       // 1. Hit matched parameterized route with sensitive data in path, query, header, and body
       const consumeRes = await request(app)
-        .post(`/api/v1/secrets/${fakeUrlToken}/consume?key=${fakeEncryptionKey}`)
+        .post(`/api/v1/test-logger/${fakeUrlToken}/consume?key=${fakeEncryptionKey}`)
         .set('Authorization', `Bearer ${fakeRevokeToken}`)
         .set('Cookie', `session=${fakeEncryptionKey}`)
         .set('Content-Type', 'application/json')
@@ -376,7 +368,7 @@ describe('Phase 2: Foundation & Security Baseline Integration Tests', () => {
       const firstLog = JSON.parse(lines[0]!) as Record<string, unknown>;
       expect(firstLog.requestId).toBe(consumeRes.headers['x-request-id']);
       expect(firstLog.method).toBe('POST');
-      expect(firstLog.route).toBe('/api/v1/secrets/:token/consume');
+      expect(firstLog.route).toBe('/api/v1/test-logger/:token/consume');
       expect(firstLog.statusCode).toBe(200);
       expect(typeof firstLog.latencyMs).toBe('number');
 

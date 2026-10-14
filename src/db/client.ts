@@ -24,7 +24,10 @@ export function createPool(config: AppConfig): pg.Pool {
 
   pool.on('error', (err) => {
     // Audit-safe error logging: never log DATABASE_URL or query strings
-    logger.error({ errCode: (err as { code?: string }).code }, 'Unexpected PostgreSQL pool client error');
+    logger.error(
+      { errCode: (err as { code?: string }).code },
+      'Unexpected PostgreSQL pool client error'
+    );
   });
 
   return pool;

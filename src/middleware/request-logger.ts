@@ -5,7 +5,10 @@ const ROUTE_TEMPLATE_MATCHERS: ReadonlyArray<{ pattern: RegExp; template: string
   { pattern: /^\/api\/v1\/health\/?$/, template: '/api/v1/health' },
   { pattern: /^\/api\/v1\/secrets\/?$/, template: '/api/v1/secrets' },
   { pattern: /^\/api\/v1\/secrets\/[^/]+\/status\/?$/, template: '/api/v1/secrets/:token/status' },
-  { pattern: /^\/api\/v1\/secrets\/[^/]+\/consume\/?$/, template: '/api/v1/secrets/:token/consume' },
+  {
+    pattern: /^\/api\/v1\/secrets\/[^/]+\/consume\/?$/,
+    template: '/api/v1/secrets/:token/consume',
+  },
   { pattern: /^\/api\/v1\/secrets\/[^/]+\/?$/, template: '/api/v1/secrets/:token' },
 ];
 
@@ -16,7 +19,10 @@ const ROUTE_TEMPLATE_MATCHERS: ReadonlyArray<{ pattern: RegExp; template: string
 export function resolveRouteTemplate(req: Request): string {
   const routeObj = req.route as { path?: unknown } | undefined;
   if (routeObj && typeof routeObj.path === 'string') {
-    const base = req.baseUrl ?? '';
+    let base = req.baseUrl ?? '';
+    if (!base && req.originalUrl?.startsWith('/api/v1/secrets')) {
+      base = '/api/v1/secrets';
+    }
     const routePath = routeObj.path === '/' && base.length > 0 ? '' : routeObj.path;
     return `${base}${routePath}` || '/';
   }

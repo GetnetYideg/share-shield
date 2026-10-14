@@ -45,9 +45,7 @@ export const secrets = pgTable(
     iv: bytea('iv'),
     payloadVersion: integer('payload_version').notNull().default(1),
     expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })
-      .notNull()
-      .defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     consumedAt: timestamp('consumed_at', { withTimezone: true, mode: 'date' }),
     revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
     maxViews: integer('max_views').notNull().default(1),
@@ -58,22 +56,10 @@ export const secrets = pgTable(
     index('secrets_cleanup_idx').on(table.consumedAt, table.revokedAt, table.expiresAt),
     check('check_max_views', sql`${table.maxViews} = 1`),
     check('check_payload_version', sql`${table.payloadVersion} = 1`),
-    check(
-      'check_token_hash_length',
-      sql`octet_length(${table.tokenHash}) = 32`
-    ),
-    check(
-      'check_revoke_token_hash_length',
-      sql`octet_length(${table.revokeTokenHash}) = 32`
-    ),
-    check(
-      'check_iv_length',
-      sql`${table.iv} IS NULL OR octet_length(${table.iv}) = 12`
-    ),
-    check(
-      'check_expires_after_created',
-      sql`${table.expiresAt} > ${table.createdAt}`
-    ),
+    check('check_token_hash_length', sql`octet_length(${table.tokenHash}) = 32`),
+    check('check_revoke_token_hash_length', sql`octet_length(${table.revokeTokenHash}) = 32`),
+    check('check_iv_length', sql`${table.iv} IS NULL OR octet_length(${table.iv}) = 12`),
+    check('check_expires_after_created', sql`${table.expiresAt} > ${table.createdAt}`),
   ]
 );
 

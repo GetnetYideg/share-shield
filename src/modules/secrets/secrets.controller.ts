@@ -3,7 +3,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '../../db/schema.js';
 import { getDb } from '../../db/client.js';
 import { SecretsService } from './secrets.service.js';
-import type { CreateSecretInput } from './secrets.schemas.js';
+import { type CreateSecretInput, parseRevokeTokenFromHeader } from './secrets.schemas.js';
 
 export function createSecretsController(
   db?: NodePgDatabase<typeof schema>,
@@ -17,7 +17,7 @@ export function createSecretsController(
         const input = req.body as CreateSecretInput;
         const result = await service.createSecret(getDatabase(), input);
 
-        // Never echo tokens, keys, or ciphertext in response (Invariant 1 & Phase 1)
+        // Never echo tokens, keys, or ciphertext in creation response (Invariant 1)
         res.status(201).json({
           data: {
             created: true,
@@ -42,6 +42,38 @@ export function createSecretsController(
           },
           requestId: req.requestId,
         });
+      } catch (err) {
+        next(err);
+      }
+    },
+
+    async consumeSecret(req: Request, res: Response, next: NextFunction): Promise<void> {
+      try {
+        const token = req.params.token as string;
+        const result = await service.consumeSecret(getDatabase(), token);
+
+        res.status(200).json({
+          data: {
+            ciphertext: result.ciphertext,
+            iv: result.iv,
+            payloadVersion: result.payloadVersion,
+          },
+          requestId: req.requestId,
+        });
+      } catch (err) {
+        next(err);
+      }
+    },
+
+    async revokeSecret(req: Request, res: Response, next: NextFunction): Promise<void> {
+      try {
+        const token = req.params.token as string;
+        const revokeToken = parseRevokeTokenFromHeader(req.headers.authorization);
+
+        await service.revokeSecret(getDatabase(), token, revokeToken);
+
+        // Api_Reference.md section 8: 204 No Content
+        res.status(204).end();
       } catch (err) {
         next(err);
       }
