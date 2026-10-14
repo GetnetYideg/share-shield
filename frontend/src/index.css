@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg: #070d0f;
+  --color-panel: #0b1214;
+  --color-surface: #0f1415;
+  --color-tabbar: #0a0c0c;
+  --color-border: rgba(25, 211, 217, 0.14);
+  --color-accent: #19d3d9;
+  --color-accent-fill: #0b2e30;
+  --color-accent-border: #1a8c90;
+  --color-active-circle: #0f4a4d;
+  --color-text: #e8eeee;
+  --color-muted: #7d8a8c;
+  --color-dim: #5d6c6e;
+  --color-danger: #d94848;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Custom Cyan Glowing Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #070d0f;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1a8c90;
+  border-radius: 3px;
+  box-shadow: 0 0 8px rgba(25, 211, 217, 0.4);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #19d3d9;
+  box-shadow: 0 0 12px rgba(25, 211, 217, 0.8);
+}
+
+/* Faint Grid Texture for Header Strip */
+.grid-texture {
+  background-size: 20px 20px;
+  background-image: 
+    linear-gradient(to right, rgba(25, 211, 217, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(25, 211, 217, 0.04) 1px, transparent 1px);
+}
+
+/* Custom focus ring */
+*:focus-visible {
+  outline: 2px solid #19d3d9;
+  outline-offset: 2px;
+}
