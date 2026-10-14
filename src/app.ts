@@ -1,7 +1,9 @@
 import express, { type Express } from 'express';
 import type pg from 'pg';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { Logger } from 'pino';
 import type { SendCommandFn } from 'rate-limit-redis';
+import * as schema from './db/schema.js';
 import { parseEnv, type AppConfig } from './config/env.js';
 import { createLogger } from './lib/logger.js';
 import { requestIdMiddleware } from './middleware/request-id.js';
@@ -13,12 +15,14 @@ import { createCorsMiddleware } from './middleware/cors.js';
 import { createRateLimiters, type RateLimiterRegistry } from './middleware/rate-limiter.js';
 import { createBodyParserMiddleware } from './middleware/body-parser.js';
 import { createHealthRouter } from './modules/health/health.routes.js';
+import { createSecretsRouter } from './modules/secrets/secrets.routes.js';
 import { notFoundHandler, errorHandler } from './middleware/error-handler.js';
 
 export interface CreateAppOptions {
   config?: AppConfig;
   logger?: Logger;
   pool?: pg.Pool;
+  db?: NodePgDatabase<typeof schema>;
   redisSendCommand?: SendCommandFn;
   registerAdditionalRoutes?: (app: Express, rateLimiters: RateLimiterRegistry) => void;
 }
@@ -57,6 +61,13 @@ export function createApp(options: CreateAppOptions = {}): Express {
 
   // 6. Routes
   app.use('/api/v1/health', createHealthRouter(options.pool));
+  app.use(
+    '/api/v1/secrets',
+    createSecretsRouter({
+      db: options.db,
+      rateLimiters,
+    })
+  );
 
   if (options.registerAdditionalRoutes) {
     options.registerAdditionalRoutes(app, rateLimiters);

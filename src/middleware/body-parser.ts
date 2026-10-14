@@ -34,6 +34,22 @@ export function createBodyParserMiddleware(maxBodySize: string): RequestHandler[
     limit: maxBodySize,
     strict: true,
     type: 'application/json',
+    verify: (_req, _res, buf): void => {
+      const text = buf.toString('utf8');
+      if (
+        text.includes('"__proto__"') ||
+        text.includes('"constructor"') ||
+        text.includes('"prototype"')
+      ) {
+        throw new ValidationError('Forbidden property name in JSON payload.');
+      }
+    },
+    reviver: (key: string, value: unknown): unknown => {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+        throw new ValidationError(`Forbidden key '${key}' detected in request body.`);
+      }
+      return value;
+    },
   });
 
   const ensureObjectBody = (req: Request, _res: Response, next: NextFunction): void => {
