@@ -4,7 +4,14 @@ import { RedisStore, type SendCommandFn } from 'rate-limit-redis';
 import type { Request, Response } from 'express';
 import type { AppConfig } from '../config/env.js';
 
-export type RateLimitClass = 'global' | 'create' | 'status' | 'consume' | 'revoke' | 'auth';
+export type RateLimitClass =
+  | 'global'
+  | 'create'
+  | 'status'
+  | 'consume'
+  | 'consumePerSecret'
+  | 'revoke'
+  | 'auth';
 
 export type RateLimiterRegistry = Record<RateLimitClass, RateLimitRequestHandler>;
 
@@ -73,6 +80,50 @@ export function createRateLimiterForClass(
   });
 }
 
+/**
+ * Creates a per-secret rate limiter for the consume endpoint keyed by tokenHash (never the raw token).
+ * Mitigates distributed online brute-force attacks across rotating IPs.
+ */
+export function createSecretConsumeRateLimiter(options: CreateRateLimiterOptions): RateLimitRequestHandler {
+  const { config, redisSendCommand } = options;
+
+  let store: Store | undefined;
+  if (redisSendCommand) {
+    store = new RedisStore({
+      sendCommand: redisSendCommand,
+      prefix: 'rl:secret_consume:',
+    });
+  }
+
+  return rateLimit({
+    windowMs: config.RATE_LIMIT_WINDOW_MS,
+    limit: config.RATE_LIMIT_CONSUME_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    store,
+    validate: false,
+    keyGenerator: (req: Request): string => {
+      const token = req.params?.token ?? 'unknown';
+      // Keyed strictly by SHA-256 digest of token parameter, never raw token string
+      return crypto.createHash('sha256').update(token).digest('hex');
+    },
+    handler: (req: Request, res: Response): void => {
+      res.locals.errorCode = 'RATE_LIMITED';
+      const retryAfterSeconds = Math.ceil(config.RATE_LIMIT_WINDOW_MS / 1000);
+      if (!res.getHeader('Retry-After')) {
+        res.setHeader('Retry-After', String(retryAfterSeconds));
+      }
+      res.status(429).json({
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Rate limit exceeded. Please try again later.',
+          requestId: req.requestId,
+        },
+      });
+    },
+  });
+}
+
 export function createRateLimiters(options: CreateRateLimiterOptions): RateLimiterRegistry {
   const { config } = options;
   return {
@@ -80,6 +131,7 @@ export function createRateLimiters(options: CreateRateLimiterOptions): RateLimit
     create: createRateLimiterForClass('create', config.RATE_LIMIT_CREATE_MAX, options),
     status: createRateLimiterForClass('status', config.RATE_LIMIT_STATUS_MAX, options),
     consume: createRateLimiterForClass('consume', config.RATE_LIMIT_CONSUME_MAX, options),
+    consumePerSecret: createSecretConsumeRateLimiter(options),
     revoke: createRateLimiterForClass('revoke', config.RATE_LIMIT_REVOKE_MAX, options),
     auth: createRateLimiterForClass('auth', config.RATE_LIMIT_AUTH_MAX, options),
   };

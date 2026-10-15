@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import {
   isCanonicalBase64Url,
@@ -6,6 +6,9 @@ import {
   hashToken,
   hashTokenFromBase64Url,
   constantTimeEqual,
+  generatePasskey,
+  hashPasskey,
+  verifyPasskeyHash,
 } from '../../src/lib/crypto.js';
 import { ValidationError } from '../../src/lib/errors.js';
 
@@ -120,6 +123,71 @@ describe('Cryptographic Utilities (src/lib/crypto.ts)', () => {
       const buf1 = Buffer.from('short');
       const buf2 = Buffer.from('much longer buffer content');
       expect(constantTimeEqual(buf1, buf2)).toBe(false);
+    });
+  });
+
+  describe('Passkey Generation & HMAC Hashing', () => {
+    const validPepper = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const sampleTokenHash = crypto.randomBytes(32);
+
+    it('generates a 6-digit numeric passkey formatted with leading zeros', () => {
+      const samples = new Set<string>();
+      for (let i = 0; i < 50; i++) {
+        const passkey = generatePasskey();
+        expect(passkey).toMatch(/^\d{6}$/);
+        expect(passkey.length).toBe(6);
+        samples.add(passkey);
+      }
+      // CSPRNG should produce distinct values across 50 samples
+      expect(samples.size).toBeGreaterThan(1);
+    });
+
+    it('preserves leading zeros when randomInt returns a small integer (42 -> "000042")', () => {
+      const spy = vi.spyOn(crypto, 'randomInt').mockImplementation(() => 42);
+      expect(generatePasskey()).toBe('000042');
+      spy.mockRestore();
+    });
+
+    it('deterministically hashes passkey bound to tokenHash and pepper', () => {
+      const passkey = '042189';
+      const hash1 = hashPasskey(passkey, sampleTokenHash, validPepper);
+      const hash2 = hashPasskey(passkey, sampleTokenHash, validPepper);
+
+      expect(hash1.length).toBe(32);
+      expect(hash2.length).toBe(32);
+      expect(hash1.equals(hash2)).toBe(true);
+      expect(verifyPasskeyHash(hash1, hash2)).toBe(true);
+    });
+
+    it('produces different hashes when passkey differs', () => {
+      const hash1 = hashPasskey('123456', sampleTokenHash, validPepper);
+      const hash2 = hashPasskey('123457', sampleTokenHash, validPepper);
+      expect(hash1.equals(hash2)).toBe(false);
+      expect(verifyPasskeyHash(hash1, hash2)).toBe(false);
+    });
+
+    it('produces different hashes when tokenHash differs (cross-secret protection)', () => {
+      const passkey = '654321';
+      const otherTokenHash = crypto.randomBytes(32);
+      const hash1 = hashPasskey(passkey, sampleTokenHash, validPepper);
+      const hash2 = hashPasskey(passkey, otherTokenHash, validPepper);
+      expect(hash1.equals(hash2)).toBe(false);
+    });
+
+    it('produces different hashes when pepper differs', () => {
+      const passkey = '999000';
+      const otherPepper = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
+      const hash1 = hashPasskey(passkey, sampleTokenHash, validPepper);
+      const hash2 = hashPasskey(passkey, sampleTokenHash, otherPepper);
+      expect(hash1.equals(hash2)).toBe(false);
+    });
+
+    it('rejects invalid passkey format, invalid tokenHash, or short pepper', () => {
+      expect(() => hashPasskey('12345', sampleTokenHash, validPepper)).toThrow(ValidationError);
+      expect(() => hashPasskey('1234567', sampleTokenHash, validPepper)).toThrow(ValidationError);
+      expect(() => hashPasskey('abcdef', sampleTokenHash, validPepper)).toThrow(ValidationError);
+      expect(() => hashPasskey('123456', Buffer.alloc(31), validPepper)).toThrow(ValidationError);
+      expect(() => hashPasskey('123456', sampleTokenHash, 'short_pepper')).toThrow(ValidationError);
     });
   });
 });

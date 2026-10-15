@@ -49,12 +49,14 @@ describe('Database Layer & Schema Constraints Integration Tests', () => {
       const rawToken = crypto.randomBytes(32);
       const tokenHash = hashToken(rawToken);
       const revokeTokenHash = hashToken(crypto.randomBytes(32));
+      const passkeyHash = crypto.randomBytes(32);
       const ciphertext = Buffer.from('encrypted-payload-bytes');
       const iv = crypto.randomBytes(12);
 
       const created = await repository.create(db, {
         tokenHash,
         revokeTokenHash,
+        passkeyHash,
         ciphertext,
         iv,
         expiresInSeconds: 3600,
@@ -72,6 +74,7 @@ describe('Database Layer & Schema Constraints Integration Tests', () => {
         expect(statusRecord.expiresAt).toEqual(created.expiresAt);
         expect(statusRecord.consumedAt).toBeNull();
         expect(statusRecord.revokedAt).toBeNull();
+        expect(statusRecord.lockedAt).toBeNull();
         // NON-NEGOTIABLE: ciphertext and iv must never be in status query
         expect((statusRecord as Record<string, unknown>).ciphertext).toBeUndefined();
         expect((statusRecord as Record<string, unknown>).iv).toBeUndefined();
@@ -88,6 +91,7 @@ describe('Database Layer & Schema Constraints Integration Tests', () => {
   describe('Database-Level Constraints Enforcement', () => {
     const validTokenHash = hashToken(crypto.randomBytes(32));
     const validRevokeTokenHash = hashToken(crypto.randomBytes(32));
+    const validPasskeyHash = crypto.randomBytes(32);
     const validIv = crypto.randomBytes(12);
     const validCiphertext = Buffer.from('valid-ciphertext');
 
@@ -96,6 +100,7 @@ describe('Database Layer & Schema Constraints Integration Tests', () => {
         db.insert(secrets).values({
           tokenHash: hashToken(crypto.randomBytes(32)),
           revokeTokenHash: validRevokeTokenHash,
+          passkeyHash: validPasskeyHash,
           ciphertext: validCiphertext,
           iv: validIv,
           maxViews: 2, // Violates check_max_views
@@ -109,6 +114,7 @@ describe('Database Layer & Schema Constraints Integration Tests', () => {
         db.insert(secrets).values({
           tokenHash: hashToken(crypto.randomBytes(32)),
           revokeTokenHash: validRevokeTokenHash,
+          passkeyHash: validPasskeyHash,
           ciphertext: validCiphertext,
           iv: validIv,
           payloadVersion: 2, // Violates check_payload_version
@@ -123,6 +129,7 @@ describe('Database Layer & Schema Constraints Integration Tests', () => {
         db.insert(secrets).values({
           tokenHash: badTokenHash,
           revokeTokenHash: validRevokeTokenHash,
+          passkeyHash: validPasskeyHash,
           ciphertext: validCiphertext,
           iv: validIv,
           expiresAt: new Date(Date.now() + 3600000),
@@ -136,11 +143,40 @@ describe('Database Layer & Schema Constraints Integration Tests', () => {
         db.insert(secrets).values({
           tokenHash: hashToken(crypto.randomBytes(32)),
           revokeTokenHash: badRevokeHash,
+          passkeyHash: validPasskeyHash,
           ciphertext: validCiphertext,
           iv: validIv,
           expiresAt: new Date(Date.now() + 3600000),
         })
       ).rejects.toThrow(/check_revoke_token_hash_length/);
+    });
+
+    it('enforces check_passkey_hash_length (rejects passkey_hash != 32 bytes)', async () => {
+      const badPasskeyHash = crypto.randomBytes(16); // 16 bytes instead of 32
+      await expect(
+        db.insert(secrets).values({
+          tokenHash: hashToken(crypto.randomBytes(32)),
+          revokeTokenHash: validRevokeTokenHash,
+          passkeyHash: badPasskeyHash,
+          ciphertext: validCiphertext,
+          iv: validIv,
+          expiresAt: new Date(Date.now() + 3600000),
+        })
+      ).rejects.toThrow(/check_passkey_hash_length/);
+    });
+
+    it('enforces check_failed_attempts_non_negative (rejects failed_attempts < 0)', async () => {
+      await expect(
+        db.insert(secrets).values({
+          tokenHash: hashToken(crypto.randomBytes(32)),
+          revokeTokenHash: validRevokeTokenHash,
+          passkeyHash: validPasskeyHash,
+          failedAttempts: -1,
+          ciphertext: validCiphertext,
+          iv: validIv,
+          expiresAt: new Date(Date.now() + 3600000),
+        })
+      ).rejects.toThrow(/check_failed_attempts_non_negative/);
     });
 
     it('enforces check_iv_length (rejects iv != 12 bytes)', async () => {
@@ -149,6 +185,7 @@ describe('Database Layer & Schema Constraints Integration Tests', () => {
         db.insert(secrets).values({
           tokenHash: hashToken(crypto.randomBytes(32)),
           revokeTokenHash: validRevokeTokenHash,
+          passkeyHash: validPasskeyHash,
           ciphertext: validCiphertext,
           iv: badIv,
           expiresAt: new Date(Date.now() + 3600000),
@@ -161,6 +198,7 @@ describe('Database Layer & Schema Constraints Integration Tests', () => {
         db.insert(secrets).values({
           tokenHash: hashToken(crypto.randomBytes(32)),
           revokeTokenHash: validRevokeTokenHash,
+          passkeyHash: validPasskeyHash,
           ciphertext: validCiphertext,
           iv: validIv,
           // expiresAt in the past relative to now/createdAt
@@ -175,6 +213,7 @@ describe('Database Layer & Schema Constraints Integration Tests', () => {
       await db.insert(secrets).values({
         tokenHash: sharedHash,
         revokeTokenHash: validRevokeTokenHash,
+        passkeyHash: validPasskeyHash,
         ciphertext: validCiphertext,
         iv: validIv,
         expiresAt: new Date(Date.now() + 3600000),
@@ -184,6 +223,7 @@ describe('Database Layer & Schema Constraints Integration Tests', () => {
         db.insert(secrets).values({
           tokenHash: sharedHash, // Duplicate token hash
           revokeTokenHash: hashToken(crypto.randomBytes(32)),
+          passkeyHash: validPasskeyHash,
           ciphertext: validCiphertext,
           iv: validIv,
           expiresAt: new Date(Date.now() + 3600000),

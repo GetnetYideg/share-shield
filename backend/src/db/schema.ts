@@ -41,6 +41,9 @@ export const secrets = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     tokenHash: bytea('token_hash').notNull(),
     revokeTokenHash: bytea('revoke_token_hash').notNull(),
+    passkeyHash: bytea('passkey_hash').notNull(),
+    failedAttempts: integer('failed_attempts').notNull().default(0),
+    lockedAt: timestamp('locked_at', { withTimezone: true, mode: 'date' }),
     ciphertext: bytea('ciphertext'),
     iv: bytea('iv'),
     payloadVersion: integer('payload_version').notNull().default(1),
@@ -53,11 +56,18 @@ export const secrets = pgTable(
   (table) => [
     uniqueIndex('secrets_token_hash_idx').on(table.tokenHash),
     index('secrets_expires_at_idx').on(table.expiresAt),
-    index('secrets_cleanup_idx').on(table.consumedAt, table.revokedAt, table.expiresAt),
+    index('secrets_cleanup_idx').on(
+      table.consumedAt,
+      table.revokedAt,
+      table.lockedAt,
+      table.expiresAt
+    ),
     check('check_max_views', sql`${table.maxViews} = 1`),
     check('check_payload_version', sql`${table.payloadVersion} = 1`),
     check('check_token_hash_length', sql`octet_length(${table.tokenHash}) = 32`),
     check('check_revoke_token_hash_length', sql`octet_length(${table.revokeTokenHash}) = 32`),
+    check('check_passkey_hash_length', sql`octet_length(${table.passkeyHash}) = 32`),
+    check('check_failed_attempts_non_negative', sql`${table.failedAttempts} >= 0`),
     check('check_iv_length', sql`${table.iv} IS NULL OR octet_length(${table.iv}) = 12`),
     check('check_expires_after_created', sql`${table.expiresAt} > ${table.createdAt}`),
   ]

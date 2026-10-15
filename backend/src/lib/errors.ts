@@ -2,6 +2,7 @@ export type ErrorCode =
   | 'VALIDATION_ERROR'
   | 'UNAUTHENTICATED'
   | 'REVOKE_NOT_AUTHORIZED'
+  | 'PASSKEY_INVALID'
   | 'SECRET_UNAVAILABLE'
   | 'NOT_FOUND'
   | 'PAYLOAD_TOO_LARGE'
@@ -41,6 +42,15 @@ export class UnauthenticatedError extends AppError {
 export class RevokeNotAuthorizedError extends AppError {
   constructor(message = 'Revoke capability is invalid or absent.') {
     super(403, 'REVOKE_NOT_AUTHORIZED', message);
+  }
+}
+
+export class PasskeyInvalidError extends AppError {
+  public readonly attemptsRemaining: number;
+
+  constructor(attemptsRemaining: number, message = 'Incorrect passkey.') {
+    super(403, 'PASSKEY_INVALID', message);
+    this.attemptsRemaining = attemptsRemaining;
   }
 }
 

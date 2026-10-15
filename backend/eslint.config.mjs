@@ -21,6 +21,15 @@ export default tseslint.config(
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/no-explicit-any': 'error',
       'no-console': 'error',
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'Math',
+          property: 'random',
+          message:
+            'Math.random() is cryptographically insecure. Use crypto.randomInt() or crypto.randomBytes() instead.',
+        },
+      ],
     },
   },
   {

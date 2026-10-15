@@ -1,6 +1,6 @@
 import { ZodError } from 'zod';
 import type { Request, Response, NextFunction } from 'express';
-import { AppError, NotFoundError, type ErrorCode } from '../lib/errors.js';
+import { AppError, NotFoundError, PasskeyInvalidError, type ErrorCode } from '../lib/errors.js';
 
 interface BodyParserError {
   type?: string;
@@ -25,6 +25,19 @@ export function notFoundHandler(_req: Request, _res: Response, next: NextFunctio
  * Never exposes stack traces, internal details, or request bodies (Invariant 1, TH-13).
  */
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
+  if (err instanceof PasskeyInvalidError) {
+    res.locals.errorCode = err.code;
+    res.status(err.statusCode).json({
+      error: {
+        code: err.code,
+        message: err.message,
+        attemptsRemaining: err.attemptsRemaining,
+        requestId: req.requestId ?? 'req_unknown',
+      },
+    });
+    return;
+  }
+
   let statusCode = 500;
   let code: ErrorCode = 'INTERNAL_ERROR';
   let message = 'An unexpected server error occurred.';

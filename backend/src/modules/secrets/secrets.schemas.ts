@@ -71,9 +71,19 @@ export type CreateSecretInput = z.infer<typeof createSecretBodySchema>;
 export const statusQuerySchema = z.object({}).strict();
 
 /**
- * Validates body on POST /api/v1/secrets/:token/consume (empty-strict).
+ * Validates body on POST /api/v1/secrets/:token/consume (strict mode).
+ * Requires exactly 6-digit numeric string passkey.
+ * Malformed passkey fails fast with 400 VALIDATION_ERROR before database execution.
  */
-export const consumeBodySchema = z.object({}).strict();
+export const consumeBodySchema = z
+  .object({
+    passkey: z
+      .string({ required_error: 'passkey is required' })
+      .regex(/^\d{6}$/, 'passkey must be exactly 6 decimal digits'),
+  })
+  .strict();
+
+export type ConsumeSecretInput = z.infer<typeof consumeBodySchema>;
 
 /**
  * Parses and validates the creator revoke token from the Authorization header (Phase 1 decision 3a & 3b).

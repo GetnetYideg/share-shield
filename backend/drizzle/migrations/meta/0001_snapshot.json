@@ -1,0 +1,218 @@
+{
+  "id": "5844d4f7-f12c-400f-9790-302d3e637de4",
+  "prevId": "8d1db1f3-ca5a-4515-94c1-a4c77dfe5066",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.secrets": {
+      "name": "secrets",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revoke_token_hash": {
+          "name": "revoke_token_hash",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "passkey_hash": {
+          "name": "passkey_hash",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "failed_attempts": {
+          "name": "failed_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "locked_at": {
+          "name": "locked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ciphertext": {
+          "name": "ciphertext",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "iv": {
+          "name": "iv",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payload_version": {
+          "name": "payload_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "max_views": {
+          "name": "max_views",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        }
+      },
+      "indexes": {
+        "secrets_token_hash_idx": {
+          "name": "secrets_token_hash_idx",
+          "columns": [
+            {
+              "expression": "token_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "secrets_expires_at_idx": {
+          "name": "secrets_expires_at_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "secrets_cleanup_idx": {
+          "name": "secrets_cleanup_idx",
+          "columns": [
+            {
+              "expression": "consumed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "revoked_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "locked_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "check_max_views": {
+          "name": "check_max_views",
+          "value": "\"secrets\".\"max_views\" = 1"
+        },
+        "check_payload_version": {
+          "name": "check_payload_version",
+          "value": "\"secrets\".\"payload_version\" = 1"
+        },
+        "check_token_hash_length": {
+          "name": "check_token_hash_length",
+          "value": "octet_length(\"secrets\".\"token_hash\") = 32"
+        },
+        "check_revoke_token_hash_length": {
+          "name": "check_revoke_token_hash_length",
+          "value": "octet_length(\"secrets\".\"revoke_token_hash\") = 32"
+        },
+        "check_passkey_hash_length": {
+          "name": "check_passkey_hash_length",
+          "value": "octet_length(\"secrets\".\"passkey_hash\") = 32"
+        },
+        "check_failed_attempts_non_negative": {
+          "name": "check_failed_attempts_non_negative",
+          "value": "\"secrets\".\"failed_attempts\" >= 0"
+        },
+        "check_iv_length": {
+          "name": "check_iv_length",
+          "value": "\"secrets\".\"iv\" IS NULL OR octet_length(\"secrets\".\"iv\") = 12"
+        },
+        "check_expires_after_created": {
+          "name": "check_expires_after_created",
+          "value": "\"secrets\".\"expires_at\" > \"secrets\".\"created_at\""
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

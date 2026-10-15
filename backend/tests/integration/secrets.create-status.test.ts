@@ -53,6 +53,7 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
         data: {
           created: true,
           expiresAt: expect.any(String),
+          passkey: expect.stringMatching(/^\d{6}$/),
         },
         requestId: res.headers['x-request-id'],
       });
@@ -315,6 +316,7 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
         data: {
           available: true,
           expiresAt: expect.any(String),
+          passkeyRequired: true,
         },
         requestId: res1.headers['x-request-id'],
       });
@@ -325,10 +327,11 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
       const res2 = await request(app).get(`/api/v1/secrets/${secretPayload.token}/status`);
       expect(res2.status).toBe(200);
       expect(res2.body.data.available).toBe(true);
+      expect(res2.body.data.passkeyRequired).toBe(true);
     });
 
     describe('Uniform Masking for Unavailable Secrets (Invariant 4)', () => {
-      it('returns byte-identical 404 SECRET_UNAVAILABLE for unknown, expired, consumed, and revoked secrets', async () => {
+      it('returns byte-identical 404 SECRET_UNAVAILABLE for unknown, expired, consumed, revoked, and locked secrets', async () => {
         const app = createApp({ config, db });
 
         // 1. Unknown token
@@ -340,6 +343,7 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
         await db.insert(secrets).values({
           tokenHash: hashToken(Buffer.from(expiredToken, 'base64url')),
           revokeTokenHash: hashToken(crypto.randomBytes(32)),
+          passkeyHash: crypto.randomBytes(32),
           ciphertext: Buffer.from('ciphertext'),
           iv: crypto.randomBytes(12),
           createdAt: new Date(Date.now() - 7200000), // 2 hours ago
@@ -352,6 +356,7 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
         await db.insert(secrets).values({
           tokenHash: hashToken(Buffer.from(consumedToken, 'base64url')),
           revokeTokenHash: hashToken(crypto.randomBytes(32)),
+          passkeyHash: crypto.randomBytes(32),
           ciphertext: Buffer.from('ciphertext'),
           iv: crypto.randomBytes(12),
           expiresAt: new Date(Date.now() + 3600000),
@@ -364,6 +369,7 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
         await db.insert(secrets).values({
           tokenHash: hashToken(Buffer.from(revokedToken, 'base64url')),
           revokeTokenHash: hashToken(crypto.randomBytes(32)),
+          passkeyHash: crypto.randomBytes(32),
           ciphertext: Buffer.from('ciphertext'),
           iv: crypto.randomBytes(12),
           expiresAt: new Date(Date.now() + 3600000),
@@ -371,11 +377,26 @@ describe('Phase 4: Create & Status Endpoints Integration Tests', () => {
         });
         const resRevoked = await request(app).get(`/api/v1/secrets/${revokedToken}/status`);
 
-        // Verify status code is strictly 404 across all four
+        // 5. Locked secret (exhausted passkey attempts)
+        const lockedToken = crypto.randomBytes(32).toString('base64url');
+        await db.insert(secrets).values({
+          tokenHash: hashToken(Buffer.from(lockedToken, 'base64url')),
+          revokeTokenHash: hashToken(crypto.randomBytes(32)),
+          passkeyHash: crypto.randomBytes(32),
+          ciphertext: null,
+          iv: null,
+          expiresAt: new Date(Date.now() + 3600000),
+          failedAttempts: 5,
+          lockedAt: new Date(),
+        });
+        const resLocked = await request(app).get(`/api/v1/secrets/${lockedToken}/status`);
+
+        // Verify status code is strictly 404 across all five
         expect(resUnknown.status).toBe(404);
         expect(resExpired.status).toBe(404);
         expect(resConsumed.status).toBe(404);
         expect(resRevoked.status).toBe(404);
+        expect(resLocked.status).toBe(404);
 
         // Verify error code and message are byte-identical
         const expectedErrorPayload = {

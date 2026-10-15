@@ -51,13 +51,16 @@ or secret contents in error responses.
   GET             /health                    200             Health/readiness
                                                              response
 
-  POST            /secrets                   201             Create a
-                                                             ciphertext record
+  POST            /secrets                   201             Create secret
+                                                             record; return
+                                                             passkey once
 
   GET             /secrets/{token}/status    200             Return
-                                                             availability only
+                                                             availability &
+                                                             passkey requirement
 
-  POST            /secrets/{token}/consume   200             Atomically claim
+  POST            /secrets/{token}/consume   200             Verify passkey,
+                                                             atomically claim
                                                              and return
                                                              ciphertext once
 
@@ -86,7 +89,8 @@ or dependency credentials.
 # 5. POST /secrets
 
 Purpose: store encrypted content and return a generated token once. The
-frontend encrypts plaintext first and generates the token locally.
+frontend encrypts plaintext first and generates the token locally. The API
+generates a random 6-digit numeric passkey and returns it once to the creator.
 
 Request body:
 
@@ -121,7 +125,8 @@ Response 201:
 > \"data\": {\
 > \"created\": true,\
 > \"expiresAt\": \"2026-10-09T12:23:00.000Z\",\
-> \"sharePath\": \"/s/\<token\>\"\
+> \"sharePath\": \"/s/\<token\>\",\
+> \"passkey\": \"123456\"\
 > },\
 > \"requestId\": \"req_abc123\"\
 > }
@@ -130,37 +135,57 @@ Implementation note: returning the token in the response is unnecessary
 if the browser already generated it. Returning sharePath is optional;
 the browser should assemble the full URL and append #\<key\> locally.
 Never return or persist the key.
+The server generates a 6-digit numeric passkey using a cryptographically
+secure random number generator (`crypto.randomInt(0, 1_000_000)` zero-padded).
+The passkey is returned once in the creation response and is NEVER stored in
+plaintext on the server, NEVER logged, and NEVER returned again. The creator
+must transmit this passkey to the recipient via an out-of-band channel.
 
 Errors: 400 VALIDATION_ERROR; 413 PAYLOAD_TOO_LARGE; 429 RATE_LIMITED;
 500 INTERNAL_ERROR.
 
 # 6. GET /secrets/{token}/status
 
-Purpose: show a generic availability state without returning ciphertext
-or sensitive metadata.
+Purpose: show a generic availability state and whether a passkey is required
+without returning ciphertext or sensitive metadata. This endpoint is strictly
+read-only; it never checks passkeys, never consumes attempts, and never mutates
+state.
 
 Response 200:
 
 > {\
 > \"data\": {\
 > \"available\": true,\
-> \"expiresAt\": \"2026-10-09T12:23:00.000Z\"\
+> \"expiresAt\": \"2026-10-09T12:23:00.000Z\",\
+> \"passkeyRequired\": true\
 > },\
 > \"requestId\": \"req_abc123\"\
 > }
 
-For invalid, expired, consumed, or revoked tokens, return a generic
+For invalid, expired, consumed, revoked, or locked tokens, return a generic
 response such as 404 SECRET_UNAVAILABLE. Avoid distinguishing the reason
 to an unauthenticated caller.
 
 # 7. POST /secrets/{token}/consume
 
-Purpose: atomically mark a secret as consumed and return its ciphertext
-and IV. This endpoint must be designed for at-most-once retrieval.
+Purpose: atomically verify the 6-digit passkey, mark a secret as consumed,
+and return its ciphertext and IV. This endpoint must be designed for at-most-once
+retrieval and bounded attempt verification.
 
-Request body: empty JSON object or no body.
+Request body:
 
-Response 200:
+> {\
+> \"passkey\": \"123456\"\
+> }
+
+Validation:
+
+-   passkey must be a string containing exactly 6 decimal digits (`/^\d{6}$/`).
+-   Syntactically invalid or missing passkeys fail Zod schema validation
+    immediately with HTTP 400 VALIDATION_ERROR before database execution;
+    they do NOT count against the secret's attempt limit.
+
+Response 200 (Success):
 
 > {\
 > \"data\": {\
@@ -174,33 +199,78 @@ Response 200:
 The browser decrypts locally using the key extracted from the URL
 fragment. The fragment is never sent with this request.
 
-Errors: 404 SECRET_UNAVAILABLE; 429 RATE_LIMITED; 500 INTERNAL_ERROR.
+Response 403 (Incorrect Passkey on Active Secret):
+
+> {\
+> \"error\": {\
+> \"code\": \"PASSKEY_INVALID\",\
+> \"message\": \"Incorrect passkey.\",\
+> \"attemptsRemaining\": 4,\
+> \"requestId\": \"req_abc123\"\
+> }\
+> }
+
+When wrong attempts reach PASSKEY_MAX_ATTEMPTS (e.g. 5), the secret is
+permanently locked (`locked_at = NOW()`), ciphertext and IV are zeroized,
+and the response returns `attemptsRemaining: 0`. Any subsequent request to
+this secret returns generic 404 SECRET_UNAVAILABLE.
+
+Response 404 (Secret Unavailable):
+
+> {\
+> \"error\": {\
+> \"code\": \"SECRET_UNAVAILABLE\",\
+> \"message\": \"This secret is unavailable.\",\
+> \"requestId\": \"req_abc123\"\
+> }\
+> }
+
+Returned uniformly if the secret is unknown, expired, already consumed,
+revoked, or locked from prior failed attempts.
+
+Errors: 400 VALIDATION_ERROR; 403 PASSKEY_INVALID; 404 SECRET_UNAVAILABLE;
+429 RATE_LIMITED; 500 INTERNAL_ERROR.
 
 ## 7.1 Required atomic behavior
 
-Use a single transaction. One possible approach is SELECT \... FOR
-UPDATE, validate expiry/revocation/consumption, set consumed_at, and
-return the ciphertext before committing. Alternatively use a carefully
-designed conditional UPDATE \... RETURNING statement. A plain read
-followed by a separate update is not sufficient because two requests can
-race.
+Verification and state transitions must occur atomically inside a single database
+transaction with a row lock (`FOR UPDATE`) or single atomic CTE statement to eliminate
+race conditions between concurrent guesses:
 
-> BEGIN;\
-> SELECT id, ciphertext, iv, expires_at, consumed_at, revoked_at\
-> FROM secrets\
-> WHERE token_hash = \$1\
-> FOR UPDATE;\
-> \-- if missing, expired, consumed, or revoked: ROLLBACK and return
-> generic 404\
-> UPDATE secrets SET consumed_at = NOW() WHERE id = \$2;\
-> COMMIT;\
-> \-- return ciphertext and iv only to the request that successfully
-> claimed it
+1. Application computes candidate hash:
+   `candidateHash = HMAC-SHA256(key = PASSKEY_PEPPER, data = tokenHash || ":" || passkey)`
+2. Transaction acquires exclusive row lock:
+   > BEGIN;\
+   > SELECT id, ciphertext, iv, expires_at, consumed_at, revoked_at, locked_at, passkey_hash, failed_attempts\
+   > FROM secrets\
+   > WHERE token_hash = \$1\
+   > FOR UPDATE;
+3. Status evaluation:
+   - If missing, expired (`expires_at <= NOW()`), consumed, revoked, or locked (`locked_at IS NOT NULL`):
+     ROLLBACK and return uniform 404 SECRET_UNAVAILABLE.
+   - If available and candidateHash matches stored `passkey_hash`:
+     > UPDATE secrets\
+     > SET consumed_at = NOW(), ciphertext = NULL, iv = NULL\
+     > WHERE id = \$2;\
+     > COMMIT;
+     Return ciphertext and IV (200 OK).
+   - If available and candidateHash does NOT match:
+     Increment failed attempts:
+     > UPDATE secrets\
+     > SET failed_attempts = failed_attempts + 1,\
+     >     locked_at = CASE WHEN failed_attempts + 1 >= \$max_attempts THEN NOW() ELSE NULL END,\
+     >     ciphertext = CASE WHEN failed_attempts + 1 >= \$max_attempts THEN NULL ELSE ciphertext END,\
+     >     iv = CASE WHEN failed_attempts + 1 >= \$max_attempts THEN NULL ELSE iv END\
+     > WHERE id = \$2\
+     > RETURNING failed_attempts;
+     > COMMIT;
+     Calculate `attemptsRemaining = MAX(0, max_attempts - updated_failed_attempts)`.
+     Return 403 PASSKEY_INVALID with `attemptsRemaining`.
 
-Implementation note: decide whether commit happens before response. It
-should: if the client disconnects after commit, the secret may be
-consumed without being seen. This is a deliberate security/usability
-trade-off for one-time semantics.
+Implementation note: commit happens before the response is returned. If the
+client disconnects after commit on a successful consume, the secret is consumed
+without being read; if on the final failed attempt, the secret is locked and destroyed.
+This is a deliberate security trade-off for one-time semantics and attempt bounding.
 
 # 8. DELETE /secrets/{token}
 
@@ -254,18 +324,22 @@ RATE_LIMITED.
 > \-\-\-\-\-\--\
 > id UUID PRIMARY KEY\
 > token_hash BYTEA UNIQUE NOT NULL\
-> ciphertext BYTEA NOT NULL\
-> iv BYTEA NOT NULL\
+> revoke_token_hash BYTEA NOT NULL\
+> passkey_hash BYTEA NOT NULL\
+> failed_attempts INTEGER NOT NULL DEFAULT 0\
+> locked_at TIMESTAMPTZ NULL\
+> ciphertext BYTEA NULL\
+> iv BYTEA NULL\
 > payload_version INTEGER NOT NULL DEFAULT 1\
 > expires_at TIMESTAMPTZ NOT NULL\
 > created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\
 > consumed_at TIMESTAMPTZ NULL\
-> revoked_at TIMESTAMPTZ NULL\
-> revoke_token_hash BYTEA NULL
+> revoked_at TIMESTAMPTZ NULL
 
-Recommended indexes: unique index on token_hash; index on expires_at for
-cleanup; optionally index on (consumed_at, expires_at) if query patterns
-justify it.
+Recommended constraints: CHECK constraints on `length(passkey_hash) = 32` and
+`failed_attempts >= 0`. Recommended indexes: unique index on token_hash; index
+on expires_at for cleanup; composite index on (consumed_at, revoked_at, locked_at, expires_at)
+for cleanup sweep performance.
 
 # 11. Status and error codes
 
@@ -281,9 +355,13 @@ justify it.
   403                    REVOKE_NOT_AUTHORIZED    Revoke capability is
                                                   invalid or absent
 
+  403                    PASSKEY_INVALID          Incorrect passkey for
+                                                  an active secret;
+                                                  includes attemptsRemaining
+
   404                    SECRET_UNAVAILABLE       Secret does not exist,
-                                                  expired, consumed, or
-                                                  revoked
+                                                  expired, consumed,
+                                                  revoked, or locked
 
   413                    PAYLOAD_TOO_LARGE        Request exceeds payload
                                                   limit

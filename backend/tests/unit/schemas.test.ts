@@ -4,6 +4,7 @@ import {
   tokenParamSchema,
   createSecretBodySchema,
   statusQuerySchema,
+  consumeBodySchema,
 } from '../../src/modules/secrets/secrets.schemas.js';
 
 describe('Secrets Zod Schemas (src/modules/secrets/secrets.schemas.ts)', () => {
@@ -125,6 +126,31 @@ describe('Secrets Zod Schemas (src/modules/secrets/secrets.schemas.ts)', () => {
 
     it('rejects query parameters (strict mode)', () => {
       expect(statusQuerySchema.safeParse({ key: 'leak' }).success).toBe(false);
+    });
+  });
+
+  describe('consumeBodySchema', () => {
+    it('accepts a valid 6-digit numeric passkey', () => {
+      expect(consumeBodySchema.safeParse({ passkey: '123456' }).success).toBe(true);
+      expect(consumeBodySchema.safeParse({ passkey: '000000' }).success).toBe(true);
+      expect(consumeBodySchema.safeParse({ passkey: '999999' }).success).toBe(true);
+    });
+
+    it('rejects non-6-digit passkeys', () => {
+      expect(consumeBodySchema.safeParse({ passkey: '12345' }).success).toBe(false);
+      expect(consumeBodySchema.safeParse({ passkey: '1234567' }).success).toBe(false);
+      expect(consumeBodySchema.safeParse({ passkey: '12345a' }).success).toBe(false);
+      expect(consumeBodySchema.safeParse({ passkey: 'abcdef' }).success).toBe(false);
+    });
+
+    it('rejects empty or missing passkey', () => {
+      expect(consumeBodySchema.safeParse({}).success).toBe(false);
+      expect(consumeBodySchema.safeParse({ passkey: '' }).success).toBe(false);
+    });
+
+    it('rejects unknown fields in consume body (strict mode)', () => {
+      const result = consumeBodySchema.safeParse({ passkey: '123456', extra: 'bad' });
+      expect(result.success).toBe(false);
     });
   });
 });

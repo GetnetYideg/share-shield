@@ -35,9 +35,9 @@ describe('Phase 5: High-Concurrency & Race Condition Tests (Real PostgreSQL)', (
     await teardownTestDatabase();
   });
 
-  describe('Concurrent Consume Races (30 Parallel Requests)', () => {
-    // Run the concurrency stress test across 5 separate iterations to prove no race window
-    it.each([1, 2, 3, 4, 5])(
+  describe('Concurrent Consume Races (50 Parallel Requests)', () => {
+    // Run the concurrency stress test across 3 separate iterations to prove no race window
+    it.each([1, 2, 3])(
       'iteration %i: exactly ONE consume request returns 200 and all others return 404',
       async (_iteration) => {
         const app = createApp({ config, db });
@@ -53,11 +53,14 @@ describe('Phase 5: High-Concurrency & Race Condition Tests (Real PostgreSQL)', (
           expiresInSeconds: 3600,
         });
         expect(createRes.status).toBe(201);
+        const passkey = createRes.body.data.passkey;
 
-        // Fire 30 simultaneous parallel consume requests
-        const concurrencyCount = 30;
+        // Fire 50 simultaneous parallel consume requests with valid passkey
+        const concurrencyCount = 50;
         const requests = Array.from({ length: concurrencyCount }, () =>
-          request(app).post(`/api/v1/secrets/${secret.token}/consume`)
+          request(app)
+            .post(`/api/v1/secrets/${secret.token}/consume`)
+            .send({ passkey })
         );
 
         const responses = await Promise.all(requests);
@@ -99,22 +102,141 @@ describe('Phase 5: High-Concurrency & Race Condition Tests (Real PostgreSQL)', (
     );
   });
 
-  describe('Racing: Consume vs Revoke', () => {
-    it('concurrently races consume against revoke: exactly ONE succeeds and the other fails', async () => {
+  describe('Concurrent Wrong Passkey Races (50 Parallel Requests)', () => {
+    it('50 parallel wrong guesses produce exactly N PASSKEY_INVALID responses and the rest uniform 404', async () => {
       const app = createApp({ config, db });
-      const secret = await createClientSecret('racing consume vs revoke');
+      const secret = await createClientSecret('secret to lock via concurrency');
 
-      await request(app).post('/api/v1/secrets').send({
+      const createRes = await request(app).post('/api/v1/secrets').send({
         token: secret.token,
         revokeToken: secret.revokeToken,
         ciphertext: secret.ciphertext,
         iv: secret.iv,
         expiresInSeconds: 3600,
       });
+      expect(createRes.status).toBe(201);
+      const realPasskey = createRes.body.data.passkey;
+      const wrongPasskey = realPasskey === '123456' ? '654321' : '123456';
+
+      // Fire 50 simultaneous parallel requests with the wrong passkey
+      const concurrencyCount = 50;
+      const requests = Array.from({ length: concurrencyCount }, () =>
+        request(app)
+          .post(`/api/v1/secrets/${secret.token}/consume`)
+          .send({ passkey: wrongPasskey })
+      );
+
+      const responses = await Promise.all(requests);
+
+      const invalidResponses = responses.filter((r) => r.status === 403);
+      const unavailableResponses = responses.filter((r) => r.status === 404);
+
+      // Default max attempts is 5: exactly 5 wrong guesses must register
+      expect(invalidResponses.length).toBe(config.PASSKEY_MAX_ATTEMPTS);
+      expect(unavailableResponses.length).toBe(concurrencyCount - config.PASSKEY_MAX_ATTEMPTS);
+
+      // Exactly one response (the 5th attempt) must have attemptsRemaining: 0
+      const lockingResponse = invalidResponses.filter(
+        (r) => r.body.error.attemptsRemaining === 0
+      );
+      expect(lockingResponse.length).toBe(1);
+
+      // Database state verification: row is locked, failed_attempts is 5, ciphertext wiped
+      const pool = getPool(config);
+      const { rows } = await pool.query('SELECT * FROM secrets;');
+      expect(rows.length).toBe(1);
+      const row = rows[0] as Record<string, unknown>;
+      expect(row.locked_at).not.toBeNull();
+      expect(row.failed_attempts).toBe(config.PASSKEY_MAX_ATTEMPTS);
+      expect(row.ciphertext).toBeNull();
+      expect(row.iv).toBeNull();
+    });
+  });
+
+  describe('Concurrent Correct vs Wrong Passkey Races (50 Parallel Requests)', () => {
+    it('racing correct and wrong guesses never yields more than one 200 or more than N counted attempts', async () => {
+      const app = createApp({ config, db });
+      const secret = await createClientSecret('mixed race secret');
+
+      const createRes = await request(app).post('/api/v1/secrets').send({
+        token: secret.token,
+        revokeToken: secret.revokeToken,
+        ciphertext: secret.ciphertext,
+        iv: secret.iv,
+        expiresInSeconds: 3600,
+      });
+      expect(createRes.status).toBe(201);
+      const realPasskey = createRes.body.data.passkey;
+      const wrongPasskey = realPasskey === '123456' ? '654321' : '123456';
+
+      // 25 correct + 25 wrong parallel requests
+      const correctRequests = Array.from({ length: 25 }, () =>
+        request(app)
+          .post(`/api/v1/secrets/${secret.token}/consume`)
+          .send({ passkey: realPasskey })
+      );
+      const wrongRequests = Array.from({ length: 25 }, () =>
+        request(app)
+          .post(`/api/v1/secrets/${secret.token}/consume`)
+          .send({ passkey: wrongPasskey })
+      );
+
+      // Interleave
+      const mixedRequests: Promise<request.Response>[] = [];
+      while (correctRequests.length > 0 || wrongRequests.length > 0) {
+        const c = correctRequests.shift();
+        if (c) mixedRequests.push(c);
+        const w = wrongRequests.shift();
+        if (w) mixedRequests.push(w);
+      }
+
+      const responses = await Promise.all(mixedRequests);
+
+      const successResponses = responses.filter((r) => r.status === 200);
+      const invalidResponses = responses.filter((r) => r.status === 403);
+      const unavailableResponses = responses.filter((r) => r.status === 404);
+
+      // Invariants:
+      // 1. At most one 200
+      expect(successResponses.length).toBeLessThanOrEqual(1);
+      // 2. At most PASSKEY_MAX_ATTEMPTS (5) 403s
+      expect(invalidResponses.length).toBeLessThanOrEqual(config.PASSKEY_MAX_ATTEMPTS);
+      // 3. All other requests are 404
+      expect(
+        successResponses.length + invalidResponses.length + unavailableResponses.length
+      ).toBe(50);
+
+      // Verify DB row integrity
+      const pool = getPool(config);
+      const { rows } = await pool.query('SELECT * FROM secrets;');
+      expect(rows.length).toBe(1);
+      const row = rows[0] as Record<string, unknown>;
+      // Ciphertext must be wiped regardless of whether consume or lock won
+      expect(row.ciphertext).toBeNull();
+      expect(row.iv).toBeNull();
+      expect(row.failed_attempts as number).toBeLessThanOrEqual(config.PASSKEY_MAX_ATTEMPTS);
+    });
+  });
+
+  describe('Racing: Consume vs Revoke', () => {
+    it('concurrently races consume against revoke: exactly ONE succeeds and the other fails', async () => {
+      const app = createApp({ config, db });
+      const secret = await createClientSecret('racing consume vs revoke');
+
+      const createRes = await request(app).post('/api/v1/secrets').send({
+        token: secret.token,
+        revokeToken: secret.revokeToken,
+        ciphertext: secret.ciphertext,
+        iv: secret.iv,
+        expiresInSeconds: 3600,
+      });
+      const passkey = createRes.body.data.passkey;
 
       // Fire 10 simultaneous consume and 10 simultaneous revoke requests
       const consumeRequests = Array.from({ length: 10 }, () =>
-        request(app).post(`/api/v1/secrets/${secret.token}/consume`)
+        request(app)
+          .post(`/api/v1/secrets/${secret.token}/consume`)
+          .send({ passkey })
       );
       const revokeRequests = Array.from({ length: 10 }, () =>
         request(app)
@@ -148,20 +270,23 @@ describe('Phase 5: High-Concurrency & Race Condition Tests (Real PostgreSQL)', (
       const app = createApp({ config, db });
       const secret = await createClientSecret('racing consume vs cleanup');
 
-      await request(app).post('/api/v1/secrets').send({
+      const createRes = await request(app).post('/api/v1/secrets').send({
         token: secret.token,
         revokeToken: secret.revokeToken,
         ciphertext: secret.ciphertext,
         iv: secret.iv,
         expiresInSeconds: 3600,
       });
+      const passkey = createRes.body.data.passkey;
 
       const logger = createLogger({ level: 'silent' });
 
       // Fire simultaneous consume requests while running cleanup
       const consumePromise = Promise.all(
         Array.from({ length: 10 }, () =>
-          request(app).post(`/api/v1/secrets/${secret.token}/consume`)
+          request(app)
+            .post(`/api/v1/secrets/${secret.token}/consume`)
+            .send({ passkey })
         )
       );
       const cleanupPromise = runCleanupJob(db, { ...config, CLEANUP_RETENTION_HOURS: 0 }, logger);

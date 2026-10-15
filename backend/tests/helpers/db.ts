@@ -41,6 +41,7 @@ export function getTestConfig(): AppConfig {
     CORS_ALLOWED_ORIGINS: 'http://localhost:5173',
     TRUST_PROXY: 'false',
     IP_HASH_SALT: '0123456789abcdef0123456789abcdef',
+    PASSKEY_PEPPER: 'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210',
     LOG_LEVEL: 'silent',
   });
 

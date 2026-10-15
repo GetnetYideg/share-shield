@@ -65,6 +65,10 @@ out of scope.
                                      does not receive the decryption
                                      key.
 
+  Passkey                            Server-generated 6-digit numeric
+                                     access code shared out-of-band to
+                                     gate release of ciphertext.
+
   MVP                                Minimum viable product described
                                      in this specification.
   ---------------------------------------------------------------------
@@ -193,7 +197,22 @@ ciphertext before consumption.
     requests cannot both receive the payload.
 
 -   The API should return generic unavailable responses for invalid,
-    expired, consumed, or revoked tokens to reduce information leakage.
+    expired, consumed, revoked, or locked tokens to reduce information
+    leakage, with the sole exception of active secrets where an incorrect
+    passkey returns a 403 status with remaining attempts to the token holder.
+
+-   The passkey acts strictly as an access gate (second-channel factor)
+    and not as an encryption key; release of ciphertext is gated by server
+    verification of the peppered passkey HMAC.
+
+-   The passkey is generated server-side via a cryptographically secure
+    random number generator, returned once to the creator, and never
+    stored in plaintext. It is stored as an HMAC-SHA256 digest keyed with
+    a high-entropy server pepper and bound to the token hash.
+
+-   Passkey verification must strictly bound incorrect attempts (default 5).
+    Upon reaching the limit, the secret is locked immediately and its
+    ciphertext and IV are permanently wiped (zeroized).
 
 # 4. Functional requirements
 
@@ -204,7 +223,16 @@ ciphertext before consumption.
                                                   non-empty text up to
                                                   the configured limit
                                                   and select an expiry
-                                                  duration.
+                                                  duration. The API generates
+                                                  a 6-digit passkey returned
+                                                  only in the creation response.
+
+  FR-01b                  Passkey generation      The API generates a
+                                                  cryptographically secure
+                                                  6-digit passkey (000000-999999),
+                                                  stores only its peppered HMAC
+                                                  digest, and returns the
+                                                  plaintext passkey once.
 
   FR-02                   Encrypt in browser      The frontend encrypts
                                                   the secret with AES-GCM
@@ -223,23 +251,33 @@ ciphertext before consumption.
                                                   the fragment.
 
   FR-04                   Store metadata          The API stores only a
-                                                  token digest,
-                                                  ciphertext, nonce/IV,
+                                                  token digest, passkey
+                                                  digest, ciphertext, nonce/IV,
                                                   timestamps, expiry, and
                                                   state metadata.
 
   FR-05                   Preview availability    The recipient can
                                                   request non-sensitive
                                                   availability metadata
+                                                  including passkeyRequired
                                                   without receiving
                                                   ciphertext.
 
-  FR-06                   Consume secret          The recipient can make
-                                                  a consume request. The
-                                                  server atomically
-                                                  claims a valid secret
-                                                  and returns ciphertext
-                                                  at most once.
+  FR-06                   Consume secret          The recipient submits
+                                                  the 6-digit passkey.
+                                                  The server atomically
+                                                  verifies the passkey, claims
+                                                  a valid secret, and returns
+                                                  ciphertext at most once.
+
+  FR-06b                  Passkey attempt limits  The server tracks failed
+                                                  passkey attempts. Each
+                                                  invalid attempt decrements
+                                                  remaining attempts and
+                                                  returns HTTP 403. When the
+                                                  limit is reached, the secret
+                                                  is permanently locked and
+                                                  ciphertext is zeroized.
 
   FR-07                   Decrypt locally         The recipient browser
                                                   decrypts the returned
@@ -252,6 +290,11 @@ ciphertext before consumption.
                                                   is at or before current
                                                   server time cannot be
                                                   consumed.
+
+  FR-08b                  Lockout invalidation    Locked secrets are
+                                                  permanently unavailable
+                                                  and return uniform 404
+                                                  on subsequent attempts.
 
   FR-09                   Manual revoke           A creator can revoke a
                                                   secret using a
@@ -450,6 +493,96 @@ Argon2 implementation), then encrypt client-side. Never send the
 passphrase to the API. Carefully version the encryption metadata and
 test compatibility.
 
+## 6.4 Passkey protection and threat analysis
+
+### 6.4.1 Architectural Role: Access Gate vs. Encryption
+The 6-digit passkey is strictly an **access gate** evaluated by the server
+prior to releasing the ciphertext; it is **not** an encryption key. The secret
+plaintext remains protected by client-side AES-256-GCM using the key in the
+URL fragment. The passkey enables two-channel security:
+- Channel 1 (e.g., email, messaging): carries the share link `/s/<token>#<key>`.
+- Channel 2 (e.g., SMS, phone call, Signal, in-person): carries the 6-digit passkey.
+An attacker intercepting Channel 1 possesses the URL fragment key and token,
+but cannot obtain the ciphertext without the passkey.
+
+### 6.4.2 Threat Analysis & Mitigations
+
+1.  **Online Guessing (Brute Force):**
+    A 6-digit numeric passkey has only 1,000,000 possibilities ($10^6$).
+    Without strict bounding, an attacker holding the token could guess it
+    in minutes.
+    *Mitigation:* The server strictly limits incorrect attempts via
+    `PASSKEY_MAX_ATTEMPTS` (default 5, configurable between 3 and 10).
+    Failed attempts are tracked atomically in PostgreSQL across all IP
+    addresses. Upon reaching the limit, the secret is locked (`lockedAt = NOW()`),
+    and its ciphertext and IV are permanently wiped. With at most 5 attempts,
+    an online attacker's probability of success is at most $5 / 1,000,000 = 0.0005\%$.
+    Additionally, standard per-IP rate limiting (15 req/min) prevents fast
+    bursts.
+
+2.  **Database Leak (Without Pepper):**
+    If an attacker acquires a database dump, a 6-digit keyspace without a
+    secret key can be precomputed or searched in fractions of a second
+    ($10^6$ SHA-256 operations takes $< 10\text{ ms}$).
+    *Mitigation:* Passkeys are stored as `HMAC-SHA256(key = PASSKEY_PEPPER, data = tokenHash || ":" || passkey)`.
+    `PASSKEY_PEPPER` is a high-entropy server secret ($\ge 32$ random bytes)
+    held exclusively in environment variables and never written to the
+    database. Without the pepper, the attacker cannot verify candidate
+    passkeys against the stored hashes.
+
+3.  **Pepper Leak:**
+    If both the database dump and the `PASSKEY_PEPPER` are compromised,
+    an attacker could brute-force the 6-digit passkey for active rows.
+    *Mitigation:* The passkey is bound to the unique `tokenHash` (`tokenHash || ":" || passkey`),
+    preventing global precomputed rainbow tables across secrets. More
+    importantly, client-side encryption remains intact: even if the passkey
+    hash is inverted, the attacker still cannot decrypt the ciphertext without
+    the AES-GCM key stored exclusively in the creator/recipient URL fragments.
+    Immediate zeroization on consumption/revocation/lockout further limits
+    exposure to only active, unclaimed rows.
+
+4.  **Existence Oracle & Departure from Uniform Response:**
+    For general requests, the API returns a uniform 404 `SECRET_UNAVAILABLE`.
+    However, when an available secret is targeted with an incorrect passkey,
+    the endpoint returns HTTP 403 `PASSKEY_INVALID` along with `attemptsRemaining`.
+    *Justification & Security Model:* To trigger this 403 response, the
+    caller must already possess the full, cryptographically random 256-bit
+    share token (`token`). Because $2^{256}$ prevents blind token guessing,
+    the caller already knows the secret exists (they can also query `GET /status`).
+    Returning 403 with `attemptsRemaining` provides essential usability for
+    legitimate recipients who mistype a digit, informing them how many tries
+    remain before the secret is destroyed, without providing any advantage to
+    an attacker who lacks the token. Unrecognized tokens, expired secrets,
+    or already locked/consumed secrets still produce uniform 404 responses.
+
+5.  **Lockout Denial of Service (DoS):**
+    Any person possessing the share link can intentionally submit 5 incorrect
+    passkeys to burn the secret, preventing the legitimate recipient from
+    accessing it.
+    *Acceptable Security Trade-off:* This is an inherent, mathematically
+    unavoidable property of short-passcode attempt bounding. Priority is
+    given to **confidentiality over availability**: an attacker who intercepted
+    the link cannot read the secret, and burning the secret alerts the creator
+    and recipient that communication was compromised. Creators are instructed
+    to transmit links only over reasonably confidential channels.
+
+6.  **Timing Side-Channels:**
+    Discrepancies in response times could potentially reveal valid tokens
+    or passkey comparison progress.
+    *Mitigation:* The candidate HMAC is computed unconditionally prior to
+    database lookup or evaluation. Hash comparisons utilize timing-safe
+    constructs or strict equality over fixed-length 32-byte digests.
+    Database queries operate on single indexed lookups with consistent
+    row-locking paths.
+
+7.  **Logging and Telemetry Leakage:**
+    Raw passkeys in request/response bodies or query logs would defeat
+    the access gate.
+    *Mitigation:* Passkeys are strictly prohibited from logs. The logger
+    redaction filter includes `passkey` alongside tokens, keys, and
+    ciphertext. Passkeys are passed exclusively in JSON request/response
+    bodies over TLS, never in URLs.
+
 # 7. Data requirements
 
 ## 7.1 Secret records
@@ -463,9 +596,26 @@ test compatibility.
                                                   of raw token; never
                                                   store raw token
 
-  ciphertext              BYTEA or TEXT base64url Encrypted payload only
+  revokeTokenHash         BYTEA                   SHA-256 digest of
+                                                  creator revoke token
 
-  iv                      BYTEA or TEXT           AES-GCM 12-byte IV
+  passkeyHash             BYTEA                   32-byte HMAC-SHA256
+                                                  digest with pepper;
+                                                  CHECK length = 32
+
+  failedAttempts          INTEGER                 Default 0; tracks wrong
+                                                  guesses; CHECK >= 0
+
+  lockedAt                TIMESTAMPTZ nullable    Set when failed attempts
+                                                  reach maximum threshold
+
+  ciphertext              BYTEA or TEXT base64url Encrypted payload only;
+                                                  zeroized on consume,
+                                                  revoke, or lockout
+
+  iv                      BYTEA or TEXT           AES-GCM 12-byte IV;
+                                                  zeroized on consume,
+                                                  revoke, or lockout
 
   expiresAt               TIMESTAMPTZ             Required; server checks
                                                   at consume time
@@ -501,15 +651,18 @@ test compatibility.
 
 ## 7.3 Data lifecycle
 
--   A secret is available only if not expired, not revoked, and not
-    consumed.
+-   A secret is available only if not expired, not revoked, not consumed,
+    and not locked.
 
 -   Successful consume transitions the record to consumed in the same
-    transaction that returns the ciphertext.
+    atomic transaction that returns the ciphertext, immediately wiping
+    ciphertext and IV.
 
--   A cleanup task deletes expired/consumed/revoked ciphertext after a
-    short configured retention period (e.g. 24 hours), unless the
-    project policy requires immediate deletion.
+-   Exceeding the maximum allowed passkey attempts immediately transitions
+    the record to locked (`lockedAt = NOW()`), wiping ciphertext and IV.
+
+-   A cleanup task deletes expired/consumed/revoked/locked records after
+    the configured retention period.
 
 -   Backups may retain deleted database pages until backup expiration;
     disclose this limitation and set backup retention deliberately.
@@ -529,12 +682,25 @@ test compatibility.
 
 -   Expiry is evaluated using server time, not client time.
 
--   No secret plaintext, encryption key, raw share token, or passphrase
-    may appear in application logs, analytics, error trackers, or
+-   Passkey generation is mandatory for all secrets: server generates a
+    random 6-digit numeric string (000000-999999) using CSPRNG and returns it
+    once in the creation response.
+
+-   Passkeys are stored exclusively as `HMAC-SHA256(PASSKEY_PEPPER, tokenHash || ":" || passkey)`.
+    Neither raw passkeys nor the pepper are ever stored in the database.
+
+-   Passkey attempts are bounded by `PASSKEY_MAX_ATTEMPTS` (default 5,
+    configurable 3-10). Incorrect attempts on an active secret return HTTP 403
+    `PASSKEY_INVALID` with remaining attempts. When attempts are exhausted,
+    the secret transitions to locked (`lockedAt = NOW()`), and `ciphertext` and
+    `iv` are wiped immediately.
+
+-   No secret plaintext, encryption key, raw share token, passkey, or
+    pepper may appear in application logs, analytics, error trackers, or
     database records.
 
--   Creation response returns the share URL only once; the server should
-    not reconstruct or persist the complete URL.
+-   Creation response returns the share URL and passkey only once; the
+    server should not reconstruct or persist the complete URL.
 
 # 9. API overview
 
@@ -544,17 +710,18 @@ test compatibility.
   GET            /api/v1/health                   Health check   Public
 
   POST           /api/v1/secrets                  Create secret  Public with
-                                                  record from    rate limit
-                                                  ciphertext     
+                                                  record; return rate limit
+                                                  passkey once   
 
   GET            /api/v1/secrets/:token/status    Check whether  Public with
                                                   token is       rate limit
-                                                  available      
+                                                  available &    
+                                                  requires       
+                                                  passkey        
 
-  POST           /api/v1/secrets/:token/consume   Atomically     Public with
-                                                  consume and    rate limit
-                                                  return         
-                                                  ciphertext     
+  POST           /api/v1/secrets/:token/consume   Verify passkey Public with
+                                                  and atomically rate limit
+                                                  claim payload  
 
   DELETE         /api/v1/secrets/:token           Revoke secret  Revoke token
                                                   using separate required
@@ -576,7 +743,7 @@ test compatibility.
 12. A second or concurrent consume attempt cannot retrieve the
     ciphertext again.
 
-13. Expired and revoked secrets cannot be consumed.
+13. Expired, revoked, and locked secrets cannot be consumed.
 
 14. Malformed requests return structured 4xx responses and do not crash
     the server.
@@ -589,7 +756,16 @@ test compatibility.
     crypto tampering.
 
 17. Logs and error reports do not include secret content, keys, raw
-    tokens, or request bodies.
+    tokens, passkeys, or request bodies.
+
+18. The API generates a random 6-digit passkey on secret creation, returns
+    it once in the response, and stores only its peppered HMAC digest.
+
+19. A consume request requires the correct 6-digit passkey; incorrect
+    guesses decrement remaining attempts and return HTTP 403 with attempts remaining.
+
+20. Reaching the maximum failed passkey attempts permanently locks the
+    secret, wipes ciphertext and IV, and returns 404 to all future requests.
 
 # 11. Testing strategy
 

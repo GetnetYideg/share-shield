@@ -8,6 +8,7 @@ const validBaseEnv: Record<string, string> = {
   CORS_ALLOWED_ORIGINS: 'http://localhost:5173,https://app.example.com',
   TRUST_PROXY: 'false',
   IP_HASH_SALT: '0123456789abcdef0123456789abcdef',
+  PASSKEY_PEPPER: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
 };
 
 describe('Environment Configuration Validation (src/config/env.ts)', () => {
@@ -20,6 +21,8 @@ describe('Environment Configuration Validation (src/config/env.ts)', () => {
       'https://app.example.com',
     ]);
     expect(config.TRUST_PROXY).toBe(false);
+    expect(config.PASSKEY_PEPPER).toBe(validBaseEnv.PASSKEY_PEPPER);
+    expect(config.PASSKEY_MAX_ATTEMPTS).toBe(5);
     expect(config.MAX_BODY_SIZE).toBe('16kb');
     expect(config.MAX_PLAINTEXT_BYTES).toBe(10240);
     expect(config.MIN_CIPHERTEXT_CHARS).toBe(23);
@@ -84,5 +87,38 @@ describe('Environment Configuration Validation (src/config/env.ts)', () => {
       TRUST_PROXY: '1',
     });
     expect(config.TRUST_PROXY).toBe(1);
+  });
+
+  it('rejects missing or short PASSKEY_PEPPER', () => {
+    expect(() =>
+      parseEnv({
+        ...validBaseEnv,
+        PASSKEY_PEPPER: 'too_short',
+      })
+    ).toThrow(/PASSKEY_PEPPER must be at least 32 characters/);
+  });
+
+  it('parses custom valid PASSKEY_MAX_ATTEMPTS (3 to 10)', () => {
+    const config = parseEnv({
+      ...validBaseEnv,
+      PASSKEY_MAX_ATTEMPTS: '7',
+    });
+    expect(config.PASSKEY_MAX_ATTEMPTS).toBe(7);
+  });
+
+  it('rejects PASSKEY_MAX_ATTEMPTS outside of 3-10 range', () => {
+    expect(() =>
+      parseEnv({
+        ...validBaseEnv,
+        PASSKEY_MAX_ATTEMPTS: '2',
+      })
+    ).toThrow(/PASSKEY_MAX_ATTEMPTS must be at least 3/);
+
+    expect(() =>
+      parseEnv({
+        ...validBaseEnv,
+        PASSKEY_MAX_ATTEMPTS: '11',
+      })
+    ).toThrow(/PASSKEY_MAX_ATTEMPTS must be at most 10/);
   });
 });

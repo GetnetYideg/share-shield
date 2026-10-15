@@ -56,11 +56,29 @@ OneVault is an educational, zero-knowledge, one-time secret sharing vault API. T
 
 ---
 
-## 4. Inherent Security Limitations (SRS Section 6.1 & 6.2)
+## 4. Passkey Protection Security Model & Disclosures
+
+OneVault protects access to active secret ciphertexts with an mandatory 6-digit numeric passkey generated server-side using CSPRNG (`crypto.randomInt(0, 1_000_000)` zero-padded).
+
+### 4.1 Honest Threat & Cryptographic Analysis
+- **The passkey is an access gate, not encryption**:
+  The passkey does NOT encrypt or decrypt the secret. It serves strictly as an authorization gate on the server before the server releases the ciphertext. Client-side end-to-end encryption is performed exclusively with the 256-bit AES-GCM key in the URL fragment (`#<key>`).
+- **The attempt limit is what makes a 6-digit code safe**:
+  A 6-digit numeric space contains only $1,000,000$ possible combinations ($10^6$). In an offline setting, a million combinations can be searched in milliseconds. The security of this mechanism relies strictly on the server's atomic attempt bounding (`PASSKEY_MAX_ATTEMPTS`, default 5) enforced via PostgreSQL row locks (`SELECT ... FOR UPDATE`).
+- **Database & Pepper Leak Analysis**:
+  Passkeys are stored as `HMAC-SHA256(PASSKEY_PEPPER, tokenHash || ":" || passkey)`. The `tokenHash` serves as a per-secret salt.
+  - If the database leaks without `PASSKEY_PEPPER`, an attacker cannot brute-force the passkey because HMAC-SHA256 requires the secret pepper.
+  - If **both** the database and the environment pepper leak, an attacker can offline brute-force the 6-digit passkey ($10^6$ hashes). However, **the attacker still lacks the 256-bit fragment key**, so they CANNOT decrypt the ciphertext even if they recover the passkey.
+- **Link Holder Denial of Service (Burning Secrets)**:
+  Any holder of the share link (`/s/<token>`) can intentionally exhaust the 5 attempts by submitting 5 incorrect passkeys, causing the secret to be permanently locked and destroyed (`ciphertext = NULL`, `iv = NULL`). This is an **accepted trade-off**: an attacker holding the token could already consume the secret under the original one-time model. Out-of-band passkey verification prevents the attacker from *reading* the secret, even if they burn it.
+
+---
+
+## 5. Inherent Security Limitations (SRS Section 6.1 & 6.2)
 
 Users, developers, and operators must understand the fundamental physical and cryptographic boundaries of a one-time link system:
 
 1. **Compromised Endpoints**: Client-side encryption relies entirely on the integrity of the browser environment. If the creator or recipient machine is infected with malware, keyloggers, screen recording software, or malicious browser extensions, plaintext or keys can be intercepted at the time of entry or display.
 2. **Recipient Copying & Redistribution**: Once a secret is decrypted and displayed on the recipient's screen, the API cannot prevent the recipient from copying the plaintext to clipboard, taking a screenshot, printing, photographing the screen, or forwarding the content.
-3. **Link Interception & Transmission Channels**: If the creator transmits the full share link (`/s/<token>#<key>`) over an unencrypted or compromised communication channel (e.g., plaintext email, unencrypted SMS, monitored chat systems), an eavesdropper can retrieve and consume the secret before the intended recipient.
-4. **Physical Database Backups & Write-Ahead Logs (WAL)**: While PostgreSQL rows are deleted by the cleanup job and ciphertexts are zeroized to `NULL` upon consumption, database write-ahead logs and physical backup snapshots may retain historical data until the backup retention window expires (disclosed under NFR-12).
+3. **Link Interception & Transmission Channels**: If the creator transmits the full share link (`/s/<token>#<key>`) and the passkey over the same communication channel, an eavesdropper can intercept both. The passkey MUST be delivered via a distinct out-of-band channel (e.g., voice call, Signal, SMS).
+4. **Physical Database Backups & Write-Ahead Logs (WAL)**: While PostgreSQL rows are deleted by the cleanup job and ciphertexts are zeroized to `NULL` upon consumption or lockout, database write-ahead logs and physical backup snapshots may retain historical data until the backup retention window expires (disclosed under NFR-12).

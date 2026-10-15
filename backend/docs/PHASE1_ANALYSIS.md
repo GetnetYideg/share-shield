@@ -15,9 +15,9 @@ All endpoints are prefixed with `/api/v1` and strictly serve/accept `application
 | Method | Path | Auth | Rate-Limit Class | Purpose / Description |
 | :--- | :--- | :--- | :--- | :--- |
 | `GET` | `/health` | Public | Utility / Health (60 req/min) | Liveness and readiness probe. Returns minimal `{ "status": "ok" }`. Exposes no infrastructure or credential data. |
-| `POST` | `/secrets` | Public | Mutation / Create (10 req/min) | Accepts client-generated share token, revoke token, ciphertext, IV, and expiry enum. Hashes tokens with SHA-256 and persists record. |
-| `GET` | `/secrets/:token/status` | Public | Read / Status (30 req/min) | Checks secret availability without revealing ciphertext. Returns generic 404 if invalid, expired, consumed, or revoked. |
-| `POST` | `/secrets/:token/consume` | Public | Sensitive / Atomic (15 req/min) | Atomically claims the secret in a single conditional SQL statement. Returns ciphertext and IV at most once. Subsequent calls return 404. |
+| `POST` | `/secrets` | Public | Mutation / Create (10 req/min) | Accepts client-generated share token, revoke token, ciphertext, IV, and expiry enum. Generates cryptographically secure 6-digit passkey, hashes with peppered HMAC, persists record, and returns passkey once. |
+| `GET` | `/secrets/:token/status` | Public | Read / Status (30 req/min) | Checks secret availability and reports `passkeyRequired: true` without revealing ciphertext. Returns generic 404 if invalid, expired, consumed, revoked, or locked. |
+| `POST` | `/secrets/:token/consume` | Public | Sensitive / Atomic (15 req/min) | Accepts `{ passkey: "123456" }`. Atomically checks passkey against peppered HMAC, claims secret, zeroizes ciphertext, and returns payload once. Wrong passkey returns 403 with remaining attempts; exhausts attempts to lock secret. |
 | `DELETE` | `/secrets/:token` | Bearer Token (`Authorization: Bearer <revokeToken>`) | Revoke / Mutation (15 req/min) | Revokes an active secret using the creator's revoke capability token. Wipes ciphertext and sets revocation timestamp. Returns 204 No Content. |
 
 ---
@@ -28,10 +28,13 @@ All endpoints are prefixed with `/api/v1` and strictly serve/accept `application
 Represents the encrypted secret envelope and its lifecycle state.
 
 * `id` (`UUID`): Primary key, generated server-side (`gen_random_uuid()`).
-* `tokenHash` (`BYTEA` or `CHAR(64)`): Unique SHA-256 digest of the raw 32-byte decoded share token. Never stores the raw token.
-* `revokeTokenHash` (`BYTEA` or `CHAR(64)`): SHA-256 digest of the raw 32-byte decoded creator revoke token. Never stores the raw revoke token.
-* `ciphertext` (`BYTEA` or `TEXT` base64url, nullable upon consumption/revocation): AES-GCM encrypted payload including the 16-byte authentication tag.
-* `iv` (`BYTEA` or `TEXT` base64url, nullable upon consumption/revocation): 12-byte initialization vector.
+* `tokenHash` (`BYTEA`, 32 bytes): Unique SHA-256 digest of the raw 32-byte decoded share token. Never stores the raw token.
+* `revokeTokenHash` (`BYTEA`, 32 bytes): SHA-256 digest of the raw 32-byte decoded creator revoke token. Never stores the raw revoke token.
+* `passkeyHash` (`BYTEA`, 32 bytes): HMAC-SHA256 digest of `tokenHash || ":" || passkey` keyed by server secret `PASSKEY_PEPPER`. CHECK length = 32.
+* `failedAttempts` (`INTEGER`, default `0`): Tracks incorrect passkey submissions. CHECK `failed_attempts >= 0`.
+* `lockedAt` (`TIMESTAMPTZ`, nullable): Set when failed attempts reach `PASSKEY_MAX_ATTEMPTS`.
+* `ciphertext` (`BYTEA` or `TEXT` base64url, nullable upon consumption/revocation/lockout): AES-GCM encrypted payload including the 16-byte authentication tag.
+* `iv` (`BYTEA` or `TEXT` base64url, nullable upon consumption/revocation/lockout): 12-byte initialization vector.
 * `payloadVersion` (`INTEGER`, default `1`): Schema version for encryption algorithm and payload structure.
 * `expiresAt` (`TIMESTAMPTZ`): UTC expiration deadline computed at creation via server/DB time.
 * `createdAt` (`TIMESTAMPTZ`, default `NOW()`): Creation timestamp.
@@ -47,14 +50,16 @@ Represents the encrypted secret envelope and its lifecycle state.
 
 ### 1.3 Core Business Rules
 
-1. **Zero Knowledge / Plaintext Secrecy:** Decryption keys and plaintext are never received, stored, or processed by the server. The server stores only ciphertext, IV, and SHA-256 token digests.
+1. **Zero Knowledge / Plaintext Secrecy:** Decryption keys and plaintext are never received, stored, or processed by the server. The server stores only ciphertext, IV, SHA-256 token digests, and peppered passkey HMAC digests.
 2. **Strict Single Consumption:** At most one consumer request may retrieve the ciphertext. Subsequent or concurrent requests must fail with a generic unavailable response.
-3. **Atomic State Transition:** Consumption must occur in a single conditional statement (no read-then-write race window).
+3. **Atomic State Transition & Verification:** Consumption and passkey verification must occur in a single atomic transaction or conditional statement with row locking.
 4. **Server-Side Authority on Expiry:** Expiration is calculated and evaluated strictly using database/server system clock (`NOW()`), never relying on client-supplied timestamps.
-5. **Allowed Expiry Durations:** Exactly 600s (10m), 3600s (1h), 86400s (24h), or 604800s (7d). Default: 3600s.
-6. **Payload Size Cap:** Plaintext maximum is 10 KiB. Request JSON bodies are capped at 16 KiB.
-7. **Uniform State Masking:** Non-existent, expired, consumed, and revoked secrets return identical generic 404 responses (`SECRET_UNAVAILABLE`) with identical bodies to eliminate state discovery.
-8. **Logging Minimization:** Request bodies, query parameters, authorization headers, cookies, plaintext, and raw tokens are forbidden from logs and error handlers.
+5. **Passkey Access Gate:** Server generates a 6-digit numeric passkey using CSPRNG (`crypto.randomInt(0, 1_000_000)` zero-padded). Stored only as `HMAC-SHA256(PASSKEY_PEPPER, tokenHash || ":" || passkey)`. The raw passkey is returned once in the create response and never logged or stored.
+6. **Passkey Attempt Bounding & Lockout:** Incorrect passkey attempts on an active secret return HTTP 403 `PASSKEY_INVALID` with `attemptsRemaining`. Upon reaching `PASSKEY_MAX_ATTEMPTS` (default 5), the secret is locked (`lockedAt = NOW()`), ciphertext and IV are zeroized, and subsequent requests return uniform 404.
+7. **Allowed Expiry Durations:** Exactly 600s (10m), 3600s (1h), 86400s (24h), or 604800s (7d). Default: 3600s.
+8. **Payload Size Cap:** Plaintext maximum is 10 KiB. Request JSON bodies are capped at 16 KiB.
+9. **Uniform State Masking:** Non-existent, expired, consumed, revoked, and locked secrets return identical generic 404 responses (`SECRET_UNAVAILABLE`) with identical bodies to eliminate state discovery.
+10. **Logging Minimization:** Request bodies, query parameters, authorization headers, cookies, plaintext, raw tokens, passkeys, and pepper are forbidden from logs and error handlers.
 
 ---
 
@@ -106,6 +111,12 @@ Represents the encrypted secret envelope and its lifecycle state.
 | **TH-11** | **Rate-Limit Bypass via Spoofed Headers** | Attacker crafts arbitrary `X-Forwarded-For` headers to reset IP rate limit buckets. | Explicit Express `trust proxy` configuration: disabled (`false`) in direct environments; restricted to explicit trusted reverse proxy IP/CIDR or hop counts in production. Untrusted forward headers are disregarded. |
 | **TH-12** | **ORM / Query Parameter Logging** | Drizzle ORM or PostgreSQL `pg` driver logs queries along with bind parameters (hashes, ciphertext). | Drizzle ORM query logger is completely disabled in production (`logger: false`). In development/test, bind parameters are stripped. Logging of SQL parameters is forbidden. |
 | **TH-13** | **Error Handlers Echoing Input** | Central error handlers or validation formatters echo malformed input payloads back to the client. | Custom error handler processes Zod errors and emits only validation failure codes and affected field paths (e.g. `path: "ciphertext"`, `issue: "invalid_length"`). Raw received values (`error.received` / `req.body`) are never echoed in HTTP responses. |
+| **TH-14** | **Online Passkey Guessing** | Attacker possessing the share link attempts to brute-force the 6-digit numeric passkey ($10^6$ combinations). | Strictly bounded by `PASSKEY_MAX_ATTEMPTS` (default 5). Failed attempts are incremented atomically across all IPs. Reaching the limit sets `locked_at = NOW()` and permanently zeroes ciphertext/IV. Attack success rate is bounded at $5 / 1,000,000 = 0.0005\%$. |
+| **TH-15** | **Database Leakage vs. Passkey Inversion** | Attacker extracts database dump and precomputes 6-digit hash table to reverse passkey. | Stored as `HMAC-SHA256(key = PASSKEY_PEPPER, data = tokenHash || ":" || passkey)`. The pepper is $\ge 32$ high-entropy bytes stored only in server environment, never in the database. Token-hash binding prevents cross-secret precomputation. Client-side AES key in URL fragment remains necessary for decryption regardless. |
+| **TH-16** | **Lockout Denial of Service (DoS)** | Attacker intercepting the link intentionally submits 5 wrong passkeys to burn the secret before recipient opens it. | Acknowledged trade-off of short-code attempt bounding; confidentiality is prioritized over availability. Intercepting attacker cannot read the plaintext; recipient/creator are alerted that link was burned. |
+| **TH-17** | **Passkey Existence & State Oracles** | Attacker probes passkeys to infer secret state or validate token existence. | 403 `PASSKEY_INVALID` is returned only to callers who already present the valid 256-bit bearer token on an active secret. All non-existent, expired, consumed, revoked, or locked secrets return uniform 404 `SECRET_UNAVAILABLE`. |
+| **TH-18** | **Passkey Timing Side-Channels** | Attacker measures latency differences between valid and invalid passkey comparisons. | Candidate HMAC is computed unconditionally before database lookup. Comparisons in SQL or memory operate on fixed 32-byte binary buffers. |
+| **TH-19** | **Passkey Telemetry Leakage** | Passkey appears in access logs, APM traces, or exception objects. | `passkey` added to Pino logger redaction paths and filtered out of validation error details. Passkey is returned once over TLS in the create response and never logged. |
 
 ---
 
@@ -276,11 +287,65 @@ Represents the encrypted secret envelope and its lifecycle state.
       SELECT id FROM secrets
       WHERE (consumed_at IS NOT NULL
          OR revoked_at IS NOT NULL
+         OR locked_at IS NOT NULL
          OR expires_at <= NOW())
       LIMIT 1000
     );
     ```
 * **Rationale:** Ensures clean garbage collection without racing, table bloat, or lock contention across distributed instances.
+
+---
+
+### 3n. Passkey Access Gate Architecture & Threat Analysis
+
+* **1. Architectural Role: Access Gate vs. Encryption**
+  * The passkey is an **access gate** enforced by the server before releasing stored ciphertext. It is **not** an encryption key.
+  * True end-to-end confidentiality is provided by client-side Web Crypto AES-256-GCM using the 32-byte key held solely in the URL fragment (`/s/<token>#<key>`).
+  * The passkey provides two-factor channel separation: even if an adversary compromises or intercepts the share link (e.g. in chat history or email), they cannot obtain the ciphertext without the passkey delivered via a secondary channel (e.g. SMS, phone, Signal).
+
+* **2. Generation Scheme:**
+  * Generated exclusively on the server at creation time via `crypto.randomInt(0, 1_000_000).toString().padStart(6, '0')`.
+  * Mandatory for all secrets (no opt-out) to ensure uniform security semantics and avoid branching execution paths.
+  * Uses Node.js CSPRNG (`node:crypto`); `Math.random` is strictly forbidden.
+  * Returned once to the creator in the `POST /api/v1/secrets` 201 response. Never returned again and never logged.
+
+* **3. Storage & Pepper Scheme:**
+  * Storage format: `passkeyHash = HMAC-SHA256(key = PASSKEY_PEPPER, data = tokenHash || ":" || passkey)` stored as `BYTEA` (32 bytes).
+  * `PASSKEY_PEPPER` is a high-entropy server secret ($\ge 32$ random bytes, base64 or hex) validated by Zod at startup.
+  * Binding to `tokenHash`: Eliminates cross-secret precomputations and rainbow tables.
+  * HMAC vs. Slow KDF (Argon2id): With a strict attempt limit (5 guesses max), online brute force is impossible ($P \le 0.0005\%$). Using a slow KDF like Argon2id would introduce a catastrophic asymmetric CPU DoS vector against the server. With attempt bounding and pepper protection, peppered HMAC-SHA256 provides optimal defense against both guessing and resource exhaustion.
+
+* **4. Attempt Limit & Permanent Lockout:**
+  * Configurable via `PASSKEY_MAX_ATTEMPTS` (default 5, validated range 3–10).
+  * Tracks failed attempts via database counter `failed_attempts`.
+  * When `failed_attempts >= PASSKEY_MAX_ATTEMPTS`:
+    * Secret transitions to locked: `locked_at = NOW()`.
+    * Immediate zeroization: `ciphertext = NULL`, `iv = NULL`.
+    * Once locked, all subsequent status, consume, or revoke requests return uniform 404 `SECRET_UNAVAILABLE`. The secret is destroyed.
+
+* **5. Atomic Verification & Row Locking:**
+  * Application computes `candidateHash = HMAC-SHA256(PASSKEY_PEPPER, tokenHash || ":" || passkey)` before contacting the database.
+  * Uses a single PostgreSQL transaction with row-level locking (`SELECT ... FOR UPDATE`):
+    * If secret is missing, expired, consumed, revoked, or locked: ROLLBACK and return uniform 404 `SECRET_UNAVAILABLE`.
+    * If available and candidate hash matches stored `passkey_hash`:
+      `UPDATE secrets SET consumed_at = NOW(), ciphertext = NULL, iv = NULL WHERE id = $1;` COMMIT and return ciphertext and IV.
+    * If available and candidate hash mismatches:
+      `UPDATE secrets SET failed_attempts = failed_attempts + 1, locked_at = CASE WHEN failed_attempts + 1 >= $max_attempts THEN NOW() ELSE NULL END, ciphertext = CASE WHEN failed_attempts + 1 >= $max_attempts THEN NULL ELSE ciphertext END, iv = CASE WHEN failed_attempts + 1 >= $max_attempts THEN NULL ELSE iv END WHERE id = $1 RETURNING failed_attempts;` COMMIT and return 403 `PASSKEY_INVALID` with `attemptsRemaining`.
+  * Atomic execution eliminates the race condition where concurrent wrong guesses could bypass lockout.
+
+* **6. Response Differentiation & Security Model Justification:**
+  * Correct passkey on available secret: 200 OK with `ciphertext`, `iv`, `payloadVersion`.
+  * Incorrect passkey on available secret: 403 `PASSKEY_INVALID` with `attemptsRemaining`.
+  * Unavailable secrets (unknown, expired, consumed, revoked, locked): Uniform 404 `SECRET_UNAVAILABLE`.
+  * *Threat Model Justification:* The caller must provide the complete 256-bit unpadded base64url share token (`token`) to reach verification. The 256-bit keyspace ($2^{256}$) makes brute-forcing token existence impossible. Therefore, a caller reaching this point already possesses the valid link. Returning 403 with `attemptsRemaining` provides critical feedback for legitimate recipients who make typographic errors, while giving zero existence advantage to attackers without the token.
+
+* **7. Lockout Denial of Service (DoS) Trade-off:**
+  * Anyone holding the share token can intentionally submit 5 incorrect passkeys to lock and destroy the secret.
+  * *Design Acceptance:* This trade-off is mathematically necessary for low-entropy passcodes. We prioritize **confidentiality over availability**: an eavesdropper cannot view the secret payload, and burning the secret immediately signals a channel compromise to both parties.
+
+* **8. Handling Existing Database Rows:**
+  * Existing rows in the database lack a passkey and cannot be verified under mandatory passkey rules.
+  * *Decision:* Existing pre-feature secrets will be transitioned to locked with `locked_at = NOW()` and zeroized (`ciphertext = NULL, iv = NULL`) in the migration script. This preserves audit metadata without leaving un-gated secrets or causing schema nullability issues.
 
 ---
 
@@ -350,9 +415,10 @@ Represents the encrypted secret envelope and its lifecycle state.
 ### 4.2 Database Schema Outline (Drizzle ORM)
 
 ```typescript
-import { pgTable, uuid, text, integer, timestamp, index, uniqueIndex, customType } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, integer, timestamp, index, uniqueIndex, check, customType } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
-// Custom BYTEA type for raw SHA-256 binary digests
+// Custom BYTEA type for raw 32-byte binary digests
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType() {
     return 'bytea';
@@ -371,6 +437,9 @@ export const secrets = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     tokenHash: bytea('token_hash').notNull(),
     revokeTokenHash: bytea('revoke_token_hash').notNull(),
+    passkeyHash: bytea('passkey_hash').notNull(),
+    failedAttempts: integer('failed_attempts').notNull().default(0),
+    lockedAt: timestamp('locked_at', { withTimezone: true }),
     ciphertext: text('ciphertext'), // nullable upon zeroization
     iv: text('iv'),                 // nullable upon zeroization
     payloadVersion: integer('payload_version').notNull().default(1),
@@ -383,7 +452,9 @@ export const secrets = pgTable(
   (table) => ({
     tokenHashIdx: uniqueIndex('secrets_token_hash_idx').on(table.tokenHash),
     expiresAtIdx: index('secrets_expires_at_idx').on(table.expiresAt),
-    cleanupIdx: index('secrets_cleanup_idx').on(table.consumedAt, table.revokedAt, table.expiresAt),
+    cleanupIdx: index('secrets_cleanup_idx').on(table.consumedAt, table.revokedAt, table.lockedAt, table.expiresAt),
+    passkeyHashLengthCheck: check('passkey_hash_length_check', sql`octet_length(${table.passkeyHash}) = 32`),
+    failedAttemptsCheck: check('failed_attempts_check', sql`${table.failedAttempts} >= 0`),
   })
 );
 ```

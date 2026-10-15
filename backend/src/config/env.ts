@@ -123,6 +123,15 @@ const rawEnvSchema = z.object({
   IP_HASH_SALT: z
     .string({ required_error: 'IP_HASH_SALT is required' })
     .min(16, 'IP_HASH_SALT must be at least 16 characters long'),
+  PASSKEY_PEPPER: z
+    .string({ required_error: 'PASSKEY_PEPPER is required' })
+    .min(32, 'PASSKEY_PEPPER must be at least 32 characters long'),
+  PASSKEY_MAX_ATTEMPTS: z.coerce
+    .number()
+    .int()
+    .min(3, 'PASSKEY_MAX_ATTEMPTS must be at least 3')
+    .max(10, 'PASSKEY_MAX_ATTEMPTS must be at most 10')
+    .default(5),
   REDIS_URL: z
     .string()
     .optional()

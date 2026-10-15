@@ -15,6 +15,8 @@ function createTestConfig(overrides: Partial<Record<string, string>> = {}): AppC
     CORS_ALLOWED_ORIGINS: 'http://localhost:5173',
     TRUST_PROXY: 'false',
     IP_HASH_SALT: '0123456789abcdef0123456789abcdef',
+    PASSKEY_PEPPER: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    PASSKEY_MAX_ATTEMPTS: '5',
     LOG_LEVEL: 'info',
     ...overrides,
   });

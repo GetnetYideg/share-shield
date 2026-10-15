@@ -93,3 +93,42 @@ export function constantTimeEqual(a: Buffer, b: Buffer): boolean {
 
   return crypto.timingSafeEqual(a, b);
 }
+
+/**
+ * Generates a cryptographically secure 6-digit numeric passkey (000000 - 999999).
+ * Uses CSPRNG crypto.randomInt; Math.random is strictly forbidden.
+ */
+export function generatePasskey(): string {
+  return crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
+}
+
+/**
+ * Computes peppered HMAC-SHA256 digest of a passkey bound to tokenHash.
+ * passkeyHash = HMAC-SHA256(key = PASSKEY_PEPPER, data = tokenHash || ":" || passkey)
+ * Returns 32-byte binary Buffer.
+ */
+export function hashPasskey(passkey: string, tokenHash: Buffer, pepper: string): Buffer {
+  if (typeof passkey !== 'string' || !/^\d{6}$/.test(passkey)) {
+    throw new ValidationError('Passkey must be exactly 6 digits.');
+  }
+  if (!Buffer.isBuffer(tokenHash) || tokenHash.length !== 32) {
+    throw new ValidationError('Token hash must be a 32-byte Buffer.');
+  }
+  if (typeof pepper !== 'string' || pepper.length < 32) {
+    throw new ValidationError('Passkey pepper must be at least 32 characters.');
+  }
+
+  const hmac = crypto.createHmac('sha256', pepper);
+  hmac.update(tokenHash);
+  hmac.update(':');
+  hmac.update(passkey, 'utf8');
+  return hmac.digest();
+}
+
+/**
+ * Constant-time comparison between candidate passkey hash and stored passkey hash.
+ */
+export function verifyPasskeyHash(candidateHash: Buffer, storedHash: Buffer): boolean {
+  return constantTimeEqual(candidateHash, storedHash);
+}
+

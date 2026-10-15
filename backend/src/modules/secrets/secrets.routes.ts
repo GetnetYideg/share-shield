@@ -42,6 +42,7 @@ export function createSecretsRouter(options: SecretsRouterOptions): Router {
   router.post(
     '/:token/consume',
     options.rateLimiters.consume,
+    options.rateLimiters.consumePerSecret,
     validateRequest({
       params: tokenParamSchema,
       body: consumeBodySchema,

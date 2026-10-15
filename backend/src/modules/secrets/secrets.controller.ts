@@ -17,11 +17,12 @@ export function createSecretsController(
         const input = req.body as CreateSecretInput;
         const result = await service.createSecret(getDatabase(), input);
 
-        // Never echo tokens, keys, or ciphertext in creation response (Invariant 1)
+        // Returns passkey once to the creator; never echoes tokens, encryption keys, or ciphertext (Invariant 1)
         res.status(201).json({
           data: {
             created: true,
             expiresAt: result.expiresAt.toISOString(),
+            passkey: result.passkey,
           },
           requestId: req.requestId,
         });
@@ -39,6 +40,7 @@ export function createSecretsController(
           data: {
             available: true,
             expiresAt: result.expiresAt.toISOString(),
+            passkeyRequired: true,
           },
           requestId: req.requestId,
         });
@@ -50,7 +52,8 @@ export function createSecretsController(
     async consumeSecret(req: Request, res: Response, next: NextFunction): Promise<void> {
       try {
         const token = req.params.token as string;
-        const result = await service.consumeSecret(getDatabase(), token);
+        const { passkey } = req.body as { passkey: string };
+        const result = await service.consumeSecret(getDatabase(), token, passkey);
 
         res.status(200).json({
           data: {

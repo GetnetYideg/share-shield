@@ -88,12 +88,24 @@ The API operates under a **Zero-Knowledge Architecture**: the server never accep
        "revokeToken": "<43-char-revoke-token>"
      }
      ```
-6. **Share URL Assembly**:
+   - Server returns:
+     ```json
+     {
+       "data": {
+         "created": true,
+         "expiresAt": "2026-10-09T12:23:00.000Z",
+         "passkey": "123456"
+       },
+       "requestId": "req_..."
+     }
+     ```
+6. **Share URL & Passkey Presentation**:
    - Construct the link:
      ```text
      https://app.example.com/s/{shareToken}#{keyBase64Url}
      ```
-   - Present the link to the creator.
+   - Present the link and the 6-digit passkey to the creator on separate cards.
+   - Instruct the creator to transmit the passkey via an out-of-band channel (voice, Signal, SMS) distinct from the link.
 
 ---
 
@@ -112,22 +124,30 @@ The API operates under a **Zero-Knowledge Architecture**: the server never accep
      ```
 2. **Availability Check**:
    - Send `GET /api/v1/secrets/<token>/status`.
-   - If response is `200` with `available: true`, display confirmation UI: *"A secret has been shared with you. You can reveal it once."*
+   - If response is `200` with `available: true` and `passkeyRequired: true`, render the 6-digit numeric passkey input.
    - If response is `404`, display generic message: *"This secret is unavailable or has already been viewed."*
-3. **Consume & Decrypt**:
-   - Recipient clicks *"Reveal Secret"*.
-   - Send `POST /api/v1/secrets/<token>/consume` with empty JSON body `{}`.
-   - Server returns:
+3. **Passkey Entry & Consumption**:
+   - Recipient enters the 6-digit passkey and clicks *"Reveal Secret"*.
+   - Send `POST /api/v1/secrets/<token>/consume` with strict JSON body:
      ```json
      {
-       "data": {
-         "ciphertext": "<base64url-ciphertext>",
-         "iv": "<16-char-iv>",
-         "payloadVersion": 1
-       },
-       "requestId": "req_..."
+       "passkey": "123456"
      }
      ```
+   - Response handling:
+     - **403 `PASSKEY_INVALID`**: Display *"Incorrect passkey. N attempts remaining"*. When `attemptsRemaining: 0`, secret is locked and destroyed; show generic unavailable message.
+     - **404 `SECRET_UNAVAILABLE`**: Display generic unavailable message.
+     - **200 OK**: Receive ciphertext and IV:
+       ```json
+       {
+         "data": {
+           "ciphertext": "<base64url-ciphertext>",
+           "iv": "<16-char-iv>",
+           "payloadVersion": 1
+         },
+         "requestId": "req_..."
+       }
+       ```
    - Browser imports key:
      ```typescript
      const key = await window.crypto.subtle.importKey(

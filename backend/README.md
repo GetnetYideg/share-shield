@@ -61,6 +61,8 @@ cp .env.example .env
 | `CORS_ALLOWED_ORIGINS` | Comma-separated allowed frontend origins | `http://localhost:5173` |
 | `TRUST_PROXY` | Proxy hop count or CIDR (`false`, `1`, `loopback`) | `false` |
 | `IP_HASH_SALT` | Secret salt for HMAC-SHA256 IP hashing (min 16 chars) | *Required* |
+| `PASSKEY_PEPPER` | Secret pepper for HMAC-SHA256 passkey hashing (min 32 chars) | *Required* |
+| `PASSKEY_MAX_ATTEMPTS` | Maximum failed passkey attempts before permanent lock (3-10) | `5` |
 | `REDIS_URL` | Optional Redis URL for distributed rate limiting | *Optional* |
 | `LOG_LEVEL` | Pino logging level (`info`, `debug`, `warn`, `error`) | `info` |
 | `MAX_BODY_SIZE` | Express JSON body parser limit | `16kb` |
