@@ -72,9 +72,9 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-bg text-text flex items-center justify-center p-3 sm:p-6 lg:p-10 pb-28 md:pb-10">
-      <div className="flex w-full max-w-7xl items-start gap-6">
-        {/* Floating Pill Sidebar */}
+    <div className="min-h-screen bg-bg text-text flex items-start justify-start p-2 sm:p-3 md:pl-2.5 md:pr-4 md:py-3 w-full pb-24 md:pb-3">
+      <div className="flex w-full items-start gap-3 md:gap-3.5">
+        {/* Floating Pill Sidebar attached to the left */}
         <Sidebar activeTab={activeTab} onSelectTab={handleSelectTab} />
 
         {/* Main Console Panel */}
