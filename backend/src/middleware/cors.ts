@@ -19,7 +19,7 @@ export function createCorsMiddleware(allowedOrigins: ReadonlyArray<string>): Req
       callback(new ForbiddenError('Origin is not allowed by CORS policy.'));
     },
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Request-Id'],
     exposedHeaders: [
       'X-Request-Id',
       'Retry-After',
