@@ -63,7 +63,20 @@ export class ApiError extends Error {
   }
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_URL;
+export function getApiBaseUrl(): string {
+  const envUrl = import.meta.env.VITE_API_URL;
+  const raw = (typeof envUrl === 'string' && envUrl.trim() !== '')
+    ? envUrl.trim().replace(/\/+$/, '')
+    : '/api/v1';
+
+  // If user passed a full origin without /api/v1 (e.g. https://my-app.onrender.com), ensure /api/v1 is included
+  if (!raw.endsWith('/api/v1') && !raw.includes('/api/')) {
+    return `${raw}/api/v1`;
+  }
+  return raw;
+}
+
+const API_BASE_URL = getApiBaseUrl();
 
 async function handleResponse<T>(res: Response): Promise<T> {
   if (res.status === 204) {
@@ -160,9 +173,10 @@ export async function createSecret(payload: CreateSecretRequest): Promise<Create
     return await handleResponse<CreateSecretResponse>(res);
   } catch (err) {
     if (err instanceof ApiError) throw err;
+    console.error('[ShareShield API Error]', err);
     throw new ApiError({
       code: 'NETWORK_ERROR',
-      message: 'Network connection failed. Please check your connectivity.',
+      message: 'Network connection failed. Please check your connectivity, CORS configuration, or API URL.',
       status: 0,
     });
   }
@@ -182,9 +196,10 @@ export async function getSecretStatus(token: string): Promise<SecretStatusRespon
     return await handleResponse<SecretStatusResponse>(res);
   } catch (err) {
     if (err instanceof ApiError) throw err;
+    console.error('[ShareShield API Error]', err);
     throw new ApiError({
       code: 'NETWORK_ERROR',
-      message: 'Network connection failed. Please check your connectivity.',
+      message: 'Network connection failed. Please check your connectivity, CORS configuration, or API URL.',
       status: 0,
     });
   }
@@ -208,9 +223,10 @@ export async function consumeSecret(
     return await handleResponse<ConsumeSecretResponse>(res);
   } catch (err) {
     if (err instanceof ApiError) throw err;
+    console.error('[ShareShield API Error]', err);
     throw new ApiError({
       code: 'NETWORK_ERROR',
-      message: 'Network connection failed. Please check your connectivity.',
+      message: 'Network connection failed. Please check your connectivity, CORS configuration, or API URL.',
       status: 0,
     });
   }
@@ -230,9 +246,10 @@ export async function revokeSecret(token: string, revokeToken: string): Promise<
     await handleResponse<void>(res);
   } catch (err) {
     if (err instanceof ApiError) throw err;
+    console.error('[ShareShield API Error]', err);
     throw new ApiError({
       code: 'NETWORK_ERROR',
-      message: 'Network connection failed. Please check your connectivity.',
+      message: 'Network connection failed. Please check your connectivity, CORS configuration, or API URL.',
       status: 0,
     });
   }
