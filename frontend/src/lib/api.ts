@@ -16,6 +16,7 @@ export interface CreateSecretResponse {
   data: {
     created: boolean;
     expiresAt: string;
+    passkey: string;
   };
   requestId: string;
 }
@@ -24,6 +25,7 @@ export interface SecretStatusResponse {
   data: {
     available: boolean;
     expiresAt: string;
+    passkeyRequired?: boolean;
   };
   requestId: string;
 }
@@ -42,12 +44,14 @@ export interface ApiErrorDetail {
   message: string;
   status: number;
   retryAfterSeconds?: number;
+  attemptsRemaining?: number;
 }
 
 export class ApiError extends Error {
   public readonly code: string;
   public readonly status: number;
   public readonly retryAfterSeconds?: number;
+  public readonly attemptsRemaining?: number;
 
   constructor(detail: ApiErrorDetail) {
     super(detail.message);
@@ -55,6 +59,7 @@ export class ApiError extends Error {
     this.code = detail.code;
     this.status = detail.status;
     this.retryAfterSeconds = detail.retryAfterSeconds;
+    this.attemptsRemaining = detail.attemptsRemaining;
   }
 }
 
@@ -72,12 +77,18 @@ async function handleResponse<T>(res: Response): Promise<T> {
     let errorCode = 'REQUEST_FAILED';
     let errorMessage = 'An unexpected error occurred.';
 
+    let attemptsRemaining: number | undefined;
     if (isJson) {
       try {
-        const errorJson = (await res.json()) as { error?: { code?: string; message?: string } };
+        const errorJson = (await res.json()) as {
+          error?: { code?: string; message?: string; attemptsRemaining?: number };
+        };
         if (errorJson.error) {
           errorCode = errorJson.error.code || errorCode;
           errorMessage = errorJson.error.message || errorMessage;
+          if (typeof errorJson.error.attemptsRemaining === 'number') {
+            attemptsRemaining = errorJson.error.attemptsRemaining;
+          }
         }
       } catch {
         // Fallback to HTTP status text
@@ -99,7 +110,17 @@ async function handleResponse<T>(res: Response): Promise<T> {
     } else if (res.status === 404) {
       errorMessage = 'This secret is unavailable or has already been viewed.';
     } else if (res.status === 403) {
-      errorMessage = 'Invalid revoke token.';
+      if (errorCode === 'PASSKEY_INVALID') {
+        if (attemptsRemaining === 0) {
+          errorMessage = 'Too many incorrect attempts. This secret has been destroyed.';
+        } else if (typeof attemptsRemaining === 'number') {
+          errorMessage = `Incorrect passkey. ${attemptsRemaining} attempts remaining.`;
+        } else {
+          errorMessage = 'Incorrect passkey.';
+        }
+      } else {
+        errorMessage = 'Invalid revoke token.';
+      }
     } else if (res.status === 400) {
       errorMessage = 'Invalid token or parameters.';
     }
@@ -109,6 +130,7 @@ async function handleResponse<T>(res: Response): Promise<T> {
       message: errorMessage,
       status: res.status,
       retryAfterSeconds,
+      attemptsRemaining,
     });
   }
 
@@ -171,14 +193,17 @@ export async function getSecretStatus(token: string): Promise<SecretStatusRespon
 /**
  * Atomically consumes the secret and retrieves the ciphertext.
  */
-export async function consumeSecret(token: string): Promise<ConsumeSecretResponse> {
+export async function consumeSecret(
+  token: string,
+  passkey: string
+): Promise<ConsumeSecretResponse> {
   try {
     const res = await fetch(`${API_BASE_URL}/secrets/${encodeURIComponent(token)}/consume`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ passkey }),
     });
     return await handleResponse<ConsumeSecretResponse>(res);
   } catch (err) {

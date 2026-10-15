@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link2, Copy, Check, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { Link2, Copy, Check, AlertTriangle, ShieldCheck, KeyRound } from 'lucide-react';
 import { encryptSecret } from '../lib/crypto';
 import { createSecret, ApiError } from '../lib/api';
 import { buildShareUrl } from '../lib/url';
@@ -26,8 +26,10 @@ export const CreateView: React.FC = () => {
 
   // Generated secret state (held in memory only!)
   const [createdShareUrl, setCreatedShareUrl] = useState<string | null>(null);
+  const [createdPasskey, setCreatedPasskey] = useState<string | null>(null);
   const [createdRevokeToken, setCreatedRevokeToken] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedPasskey, setCopiedPasskey] = useState(false);
   const [copiedRevoke, setCopiedRevoke] = useState(false);
 
   // Calculate live byte size
@@ -48,13 +50,18 @@ export const CreateView: React.FC = () => {
     setIsSubmitting(true);
     setErrorMessage(null);
 
+    // Clear previous generated secrets from memory when creating a new one
+    setCreatedShareUrl(null);
+    setCreatedPasskey(null);
+    setCreatedRevokeToken(null);
+
     try {
       // 1. Client-Side WebCrypto AES-256-GCM Encryption
       const encrypted = await encryptSecret(plaintext);
 
       // 2. Transmit ciphertext and token digest to backend API
       // Decryption key and plaintext NEVER leave the browser!
-      await createSecret({
+      const res = await createSecret({
         token: encrypted.token,
         ciphertext: encrypted.ciphertext,
         iv: encrypted.iv,
@@ -67,7 +74,9 @@ export const CreateView: React.FC = () => {
       const fullShareUrl = buildShareUrl(encrypted.token, encrypted.keyBase64Url);
 
       // 4. Update state and immediately scrub secret from input
+      // Passkey is kept strictly in memory only!
       setCreatedShareUrl(fullShareUrl);
+      setCreatedPasskey(res.data.passkey);
       setCreatedRevokeToken(encrypted.revokeToken);
       setPlaintext(''); // Clear plaintext from memory
     } catch (err) {
@@ -87,6 +96,17 @@ export const CreateView: React.FC = () => {
       await navigator.clipboard.writeText(createdShareUrl);
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2500);
+    } catch {
+      // Fallback
+    }
+  };
+
+  const handleCopyPasskey = async () => {
+    if (!createdPasskey) return;
+    try {
+      await navigator.clipboard.writeText(createdPasskey);
+      setCopiedPasskey(true);
+      setTimeout(() => setCopiedPasskey(false), 2500);
     } catch {
       // Fallback
     }
@@ -232,8 +252,9 @@ export const CreateView: React.FC = () => {
         </div>
       </div>
 
-      {/* Right Column: Share Link & Revoke Card */}
-      <div className="lg:col-span-5">
+      {/* Right Column: Share Link Card & Passkey Card (Two Separate Cards) */}
+      <div className="lg:col-span-5 flex flex-col gap-6">
+        {/* Card 1: Share Link Card */}
         <div className="rounded-square border border-border/80 bg-panel/80 p-6 md:p-8 backdrop-blur-sm">
           {/* Top Header Box */}
           <div className="flex items-center gap-4 mb-6">
@@ -286,7 +307,7 @@ export const CreateView: React.FC = () => {
             {copiedLink ? (
               <>
                 <Check size={16} strokeWidth={2} />
-                COPIED TO CLIPBOARD!
+                COPIED LINK!
               </>
             ) : (
               <>
@@ -297,7 +318,7 @@ export const CreateView: React.FC = () => {
           </button>
 
           {/* Revoke Token Section */}
-          <div className="mt-8">
+          <div className="mt-6">
             <label className="block text-xs font-mono font-bold uppercase tracking-label text-muted mb-2">
               REVOKE TOKEN
             </label>
@@ -330,9 +351,76 @@ export const CreateView: React.FC = () => {
           </div>
 
           {/* Warning / Security Advisory */}
-          <p className="mt-6 text-xs font-sans leading-relaxed text-muted">
+          <p className="mt-4 text-xs font-sans leading-relaxed text-muted">
             Anyone with the full link can open it. Send it over a private channel.
           </p>
+        </div>
+
+        {/* Card 2: 6-Digit Passkey Card (Separate Card) */}
+        <div className="rounded-square border border-border/80 bg-panel/80 p-6 md:p-8 backdrop-blur-sm">
+          {/* Top Header Box */}
+          <div className="flex items-center gap-4 mb-6">
+            <div className="flex h-12 w-12 items-center justify-center rounded-square border border-accent-border/60 bg-accent-fill/40 text-accent">
+              <KeyRound size={22} strokeWidth={1.8} />
+            </div>
+            <div>
+              <div className="text-sm font-mono font-bold tracking-label text-text uppercase">
+                6-DIGIT PASSKEY
+              </div>
+              <div className="text-[11px] font-mono tracking-widest text-accent uppercase">
+                SHOWN ONLY ONCE
+              </div>
+            </div>
+          </div>
+
+          {/* Large Monospace Passkey Display */}
+          <div className="mb-4 rounded-square border border-accent-border/60 bg-surface/90 p-4 text-center">
+            <span
+              data-testid="passkey-display"
+              className={`font-mono text-3xl font-bold tracking-[0.25em] transition-all select-all ${
+                createdPasskey ? 'text-accent' : 'text-dim'
+              }`}
+            >
+              {createdPasskey || '------'}
+            </span>
+          </div>
+
+          {/* Copy Passkey Button */}
+          <button
+            type="button"
+            onClick={handleCopyPasskey}
+            disabled={!createdPasskey}
+            className="
+              flex w-full items-center justify-center gap-2 rounded-square
+              border border-accent-border bg-accent-fill/50 py-3 text-xs font-mono font-bold uppercase tracking-label text-accent
+              transition-all hover:border-accent hover:bg-accent-fill hover:shadow-glow-sm
+              focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent
+              disabled:cursor-not-allowed disabled:opacity-40
+            "
+          >
+            {copiedPasskey ? (
+              <>
+                <Check size={16} strokeWidth={2} />
+                COPIED PASSKEY!
+              </>
+            ) : (
+              <>
+                <Copy size={16} strokeWidth={1.8} />
+                COPY PASSKEY
+              </>
+            )}
+          </button>
+
+          {/* Notice: Out-of-band delivery requirement */}
+          <div className="mt-6 rounded-square border border-border/60 bg-surface/60 p-4 text-xs font-sans leading-relaxed text-muted">
+            <p className="font-mono text-accent text-[11px] font-bold tracking-wider uppercase mb-1.5">
+              OUT-OF-BAND DELIVERY REQUIRED
+            </p>
+            <p>
+              Send the passkey through a different channel than the link (for example, a call or a
+              different messenger). Both are shown only once.
+            </p>
+          </div>
 
           {/* Zero-Knowledge Guarantee Tag */}
           <div className="mt-6 pt-4 border-t border-border/40 flex items-center gap-2 text-[11px] font-mono text-dim">

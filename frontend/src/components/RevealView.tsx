@@ -19,6 +19,11 @@ export const RevealView: React.FC<RevealViewProps> = ({
   const [isAvailable, setIsAvailable] = useState(false);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
 
+  // Passkey input state (kept strictly in memory!)
+  const [passkey, setPasskey] = useState('');
+  const [passkeyError, setPasskeyError] = useState<string | null>(null);
+  const [isLocked, setIsLocked] = useState(false);
+
   // Consume & Reveal state
   const [isConsuming, setIsConsuming] = useState(false);
   const [revealedPlaintext, setRevealedPlaintext] = useState<string | null>(null);
@@ -79,8 +84,18 @@ export const RevealView: React.FC<RevealViewProps> = ({
 
     return () => {
       isMounted = false;
+      // Wipe passkey and sensitive state on unmount
+      setPasskey('');
+      setRevealedPlaintext(null);
     };
   }, [token]);
+
+  const handlePasskeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Restrict strictly to digits and max 6 characters
+    const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 6);
+    setPasskey(digitsOnly);
+    setPasskeyError(null);
+  };
 
   const handleReveal = async () => {
     if (!key) {
@@ -88,12 +103,18 @@ export const RevealView: React.FC<RevealViewProps> = ({
       return;
     }
 
+    if (passkey.length !== 6) {
+      setPasskeyError('Please enter the full 6-digit passkey.');
+      return;
+    }
+
     setIsConsuming(true);
     setErrorMessage(null);
+    setPasskeyError(null);
 
     try {
-      // 1. Atomically consume secret on the server
-      const consumeRes = await consumeSecret(token);
+      // 1. Atomically consume secret on the server by supplying the 6-digit passkey
+      const consumeRes = await consumeSecret(token, passkey);
 
       // 2. Decrypt locally in browser using Web Crypto
       const plaintext = await decryptSecret(
@@ -102,15 +123,37 @@ export const RevealView: React.FC<RevealViewProps> = ({
         key
       );
 
-      // 3. Display plaintext and mark secret burned
+      // 3. Clear passkey immediately from state on successful reveal
+      setPasskey('');
+
+      // 4. Display plaintext and mark secret burned
       setRevealedPlaintext(plaintext);
       setIsBurned(true);
     } catch (err) {
-      setIsBurned(true);
+      // Clear passkey input immediately on error
+      setPasskey('');
+
       if (err instanceof ApiError) {
-        setErrorMessage(err.message);
+        if (err.code === 'PASSKEY_INVALID') {
+          if (err.attemptsRemaining === 0) {
+            // Secret was locked and destroyed permanently
+            setIsAvailable(false);
+            setIsLocked(true);
+            setErrorMessage('Too many incorrect attempts. This secret has been destroyed.');
+          } else {
+            const count = err.attemptsRemaining ?? 0;
+            setPasskeyError(
+              `Incorrect passkey. ${count} ${count === 1 ? 'attempt' : 'attempts'} remaining.`
+            );
+          }
+        } else if (err.status === 404) {
+          setIsAvailable(false);
+          setErrorMessage('This secret is unavailable or has already been viewed.');
+        } else {
+          setErrorMessage(err.message);
+        }
       } else {
-        setErrorMessage('Decryption failed. The secret or key may be corrupted.');
+        setErrorMessage('Failed to connect to the vault. Please check your connectivity.');
       }
     } finally {
       setIsConsuming(false);
@@ -129,8 +172,9 @@ export const RevealView: React.FC<RevealViewProps> = ({
   };
 
   const handleHide = () => {
-    // Clear plaintext from memory state immediately
+    // Clear plaintext and passkey from memory state immediately
     setRevealedPlaintext(null);
+    setPasskey('');
   };
 
   return (
@@ -145,18 +189,24 @@ export const RevealView: React.FC<RevealViewProps> = ({
         </div>
       )}
 
-      {/* Unavailable State */}
+      {/* Unavailable / Locked State */}
       {!isCheckingStatus && !isAvailable && !revealedPlaintext && (
         <div className="rounded-square border border-border bg-panel p-8 text-center">
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-danger/40 bg-danger/10 text-danger mb-4">
             <ShieldAlert size={28} />
           </div>
           <h2 className="text-xl font-mono font-bold tracking-hero text-text uppercase">
-            SECRET UNAVAILABLE
+            {isLocked ? 'SECRET DESTROYED' : 'SECRET UNAVAILABLE'}
           </h2>
           <p className="mt-3 text-sm font-sans text-muted max-w-md mx-auto">
             {errorMessage || 'This secret is unavailable or has already been viewed.'}
           </p>
+          {isLocked && (
+            <div className="mt-4 inline-flex items-center gap-2 rounded-square border border-danger/30 bg-danger/10 px-4 py-2 text-xs font-mono text-danger">
+              <AlertTriangle size={14} />
+              <span>Too many incorrect attempts. This secret has been destroyed.</span>
+            </div>
+          )}
           <div className="mt-8">
             <button
               type="button"
@@ -187,8 +237,8 @@ export const RevealView: React.FC<RevealViewProps> = ({
           </div>
 
           <p className="text-sm font-sans text-muted leading-relaxed">
-            A one-time secret has been sent to you. Clicking the button below will atomically claim
-            the secret and permanently destroy it on the server.
+            A one-time secret has been sent to you. Enter the 6-digit passkey provided by the sender
+            to verify authorization and reveal the content.
           </p>
 
           {expiresAt && (
@@ -196,6 +246,75 @@ export const RevealView: React.FC<RevealViewProps> = ({
               EXPIRES AT: {new Date(expiresAt).toLocaleString()}
             </div>
           )}
+
+          {/* Passkey Input Section */}
+          <div className="mt-8">
+            <label
+              htmlFor="passkey-input"
+              className="block text-xs font-mono font-bold uppercase tracking-label text-muted mb-2.5"
+            >
+              ENTER 6-DIGIT PASSKEY
+            </label>
+
+            <div className="relative mt-2">
+              {/* Accessible input receiving actual user input */}
+              <input
+                id="passkey-input"
+                name="passkey"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                autoComplete="off"
+                spellCheck="false"
+                value={passkey}
+                onChange={handlePasskeyChange}
+                aria-label="6-digit passkey"
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                autoFocus
+              />
+
+              {/* Six boxes representation */}
+              <div
+                className="flex items-center justify-between gap-2 sm:gap-3 pointer-events-none"
+                aria-hidden="true"
+              >
+                {Array.from({ length: 6 }).map((_, index) => {
+                  const digit = passkey[index];
+                  const isCurrent = passkey.length === index;
+                  return (
+                    <div
+                      key={index}
+                      className={`
+                        flex-1 h-14 sm:h-16 rounded-square border text-2xl font-mono font-bold
+                        flex items-center justify-center transition-all
+                        ${
+                          digit
+                            ? 'border-accent-border text-accent bg-accent-fill/30 shadow-glow-sm'
+                            : isCurrent
+                            ? 'border-accent bg-surface/90 text-accent ring-1 ring-accent'
+                            : 'border-border/80 bg-surface/60 text-dim'
+                        }
+                      `}
+                    >
+                      {digit || (isCurrent ? <span className="animate-pulse">_</span> : '')}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Passkey Error message */}
+            {passkeyError && (
+              <div
+                role="alert"
+                className="mt-4 flex items-center gap-2 text-xs font-mono text-danger font-bold"
+              >
+                <AlertTriangle size={15} className="shrink-0" />
+                <span>{passkeyError}</span>
+              </div>
+            )}
+          </div>
 
           {!key && (
             <div
@@ -223,7 +342,7 @@ export const RevealView: React.FC<RevealViewProps> = ({
             <button
               type="button"
               onClick={handleReveal}
-              disabled={isConsuming || !key}
+              disabled={isConsuming || !key || passkey.length !== 6}
               className="
                 flex w-full items-center justify-center gap-2 rounded-square
                 border border-accent-border bg-accent-fill py-3.5 text-xs font-mono font-bold uppercase tracking-label text-accent
@@ -234,7 +353,7 @@ export const RevealView: React.FC<RevealViewProps> = ({
               {isConsuming ? (
                 <>
                   <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-                  CLAIMING & DECRYPTING...
+                  VERIFYING PASSKEY & DECRYPTING...
                 </>
               ) : (
                 <>
